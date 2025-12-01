@@ -161,7 +161,6 @@ with tab1:
     st.subheader("① 연도·상품·시군구별 가스레인지 수 추이")
 
     # ── 연도별 월평균/연간합계 계산 ──
-    # (연도×월 단위까지 합산한 뒤, 연도별 월평균/연간합계 산출)
     year_month = (
         df.groupby(["연도", COL_YEAR_MONTH], as_index=False)[COL_RANGE_CNT]
         .sum()
@@ -223,20 +222,18 @@ with tab1:
     fig_year.add_vline(x=comp_year, line_dash="dot", line_width=2)
     fig_year.add_vline(x=peak_year, line_dash="dash", line_width=2)
 
-    # 정점 포인트 강조
+    # 정점 포인트 강조 (텍스트는 없애고 마커만)
     fig_year.add_trace(
         go.Scatter(
             x=[peak_year],
             y=[peak_val],
-            mode="markers+text",
-            text=[f"정점 {peak_year}"],
-            textposition="top center",
+            mode="markers",
             marker=dict(size=12),
             showlegend=False,
         )
     )
 
-    # 정점 라벨만 annotation으로 (기준/비교는 텍스트 설명으로 처리)
+    # 정점 라벨 annotation만 따로 (겹침 방지)
     ymax = float(yearly["월평균"].max())
     fig_year.add_annotation(
         x=peak_year,
@@ -263,9 +260,26 @@ with tab1:
 
     st.plotly_chart(fig_year, use_container_width=True)
 
-    # ── (2) 연도별 숫자표 (그래프 하단) ──
+    # ── (2) 연도별 숫자표 (그래프 하단, 포맷팅) ──
     st.markdown("##### 📊 연도별 가스레인지 수 요약표 (월평균·연간합계 기준)")
-    yearly_table = yearly.set_index("연도")
+
+    yearly_table = yearly.copy().set_index("연도")
+
+    # 숫자 포맷팅
+    int_cols = ["연간합계", "월평균", "전년대비 증감", "기준연도 대비 증감"]
+    rate_cols = ["전년대비 증감률(%)", "기준연도 대비 증감률(%)"]
+
+    for c in int_cols:
+        if c in yearly_table.columns:
+            yearly_table[c] = yearly_table[c].apply(
+                lambda x: "" if pd.isna(x) else f"{x:,.0f}"
+            )
+    for c in rate_cols:
+        if c in yearly_table.columns:
+            yearly_table[c] = yearly_table[c].apply(
+                lambda x: "" if pd.isna(x) else f"{x:,.1f}"
+            )
+
     st.dataframe(
         yearly_table,
         use_container_width=True,
@@ -330,14 +344,14 @@ with tab1:
 
     st.markdown("---")
 
-    # ── (5) 월별 패턴 분석 (추천 그래프) ──
+    # ── (5) 월별 패턴 분석 (라인 + 히트맵) ──
     st.markdown(
         "#### 🔹 월별 패턴 분석 (최근 10년)  \n"
         "- **월별 평균 라인 차트**로 계절성을 보고,  \n"
-        "- **연도 × 월 히트맵**으로 연도별 패턴·변곡을 함께 보는 구성이 가장 직관적이라서 같이 넣었어."
+        "- **연도 × 월 히트맵**으로 연도별 패턴·변곡을 함께 본다."
     )
 
-    # 월 단위 집계 (연도 무시)
+    # 월 단위 집계
     monthly = (
         df.groupby(["연도", "월"], as_index=False)[COL_RANGE_CNT]
         .sum()
@@ -366,7 +380,7 @@ with tab1:
 
     # (5-2) 연도 × 월 히트맵
     heat_pivot = monthly.pivot(index="월", columns="연도", values=COL_RANGE_CNT)
-    heat_pivot = heat_pivot.sort_index()  # 월 1~12 순서대로
+    heat_pivot = heat_pivot.sort_index()
 
     fig_heat = px.imshow(
         heat_pivot,
@@ -438,7 +452,6 @@ with tab2:
             )
         else:
             # featureidkey는 GeoJSON의 속성명에 맞게 수정 필요
-            # 예: properties.SIG_KOR_NM, properties.adm_nm 등
             feature_key = "properties.SIG_KOR_NM"
 
             fig_map = px.choropleth(
