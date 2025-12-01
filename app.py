@@ -153,7 +153,7 @@ tab1, tab2 = st.tabs(["① 연도·상품·시군구 추이", "② 군구별 감
 
 
 # ─────────────────────────────────────────
-# ① 연도·상품·시군구별 추이 (그래프 위, 표 아래 + 구군별 추세)
+# ① 연도·상품·시군구별 추이
 # ─────────────────────────────────────────
 with tab1:
     st.subheader("① 연도·상품·시군구별 가스레인지 수 추이")
@@ -205,33 +205,12 @@ with tab1:
         )
     )
 
-    # 기준연도 수직선
-    fig_year.add_vline(
-        x=base_year,
-        line_dash="dot",
-        line_width=2,
-        annotation_text=f"기준연도 {base_year}",
-        annotation_position="top left",
-    )
+    # 기준연도 / 비교연도 / 정점연도 수직선 (텍스트는 annotation으로 별도)
+    fig_year.add_vline(x=base_year, line_dash="dot", line_width=2)
+    fig_year.add_vline(x=comp_year, line_dash="dot", line_width=2)
+    fig_year.add_vline(x=peak_year, line_dash="dash", line_width=2)
 
-    # 비교연도 수직선
-    fig_year.add_vline(
-        x=comp_year,
-        line_dash="dot",
-        line_width=2,
-        annotation_text=f"비교연도 {comp_year}",
-        annotation_position="top right",
-    )
-
-    # 정점 연도 수직선 + 포인트 강조
-    fig_year.add_vline(
-        x=peak_year,
-        line_dash="dash",
-        line_width=2,
-        annotation_text=f"정점연도 {peak_year}",
-        annotation_position="top center",
-    )
-
+    # 정점 포인트 강조
     fig_year.add_trace(
         go.Scatter(
             x=[peak_year],
@@ -244,12 +223,38 @@ with tab1:
         )
     )
 
+    # 수직선에 대한 텍스트 라벨(annotation)
+    ymax = float(yearly[COL_RANGE_CNT].max())
+    y_text = ymax * 1.02  # 그래프 위 여백 부분
+
+    fig_year.add_annotation(
+        x=base_year,
+        y=y_text,
+        text=f"기준연도 {base_year}",
+        showarrow=False,
+        yanchor="bottom"
+    )
+    fig_year.add_annotation(
+        x=comp_year,
+        y=y_text,
+        text=f"비교연도 {comp_year}",
+        showarrow=False,
+        yanchor="bottom"
+    )
+    fig_year.add_annotation(
+        x=peak_year,
+        y=y_text,
+        text=f"정점연도 {peak_year}",
+        showarrow=False,
+        yanchor="bottom"
+    )
+
     fig_year.update_layout(
         title="연도별 가스레인지 수 추이 (정점 연도 하이라이트)",
         yaxis_title="가스레인지 수",
         xaxis_title="연도",
         hovermode="x unified",
-        margin=dict(l=40, r=20, t=60, b=40),
+        margin=dict(l=40, r=20, t=80, b=40),
         legend=dict(
             orientation="h",
             yanchor="bottom",
@@ -274,7 +279,6 @@ with tab1:
     # ── (3) 시군구별 연도별 추이 그래프 ──
     st.markdown("#### 🔹 시군구별 가스레인지 수 연도 추세")
 
-    # 연도 × 시군구별 합계
     gu_year = (
         df.groupby(["연도", COL_DISTRICT], as_index=False)[COL_RANGE_CNT]
         .sum()
