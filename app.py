@@ -1,6 +1,7 @@
 # app.py ─ 가정용 가스레인지 감소 분석 (대구)
 # - 연도·용도·상품·시군구별 가스레인지 수 추이
 # - 기준연도 vs 비교연도 군구별 감소량 / 감소율 지도
+# - 시군구별 연도별 추이 그래프
 
 from pathlib import Path
 import json
@@ -8,6 +9,7 @@ import json
 import numpy as np
 import pandas as pd
 import plotly.express as px
+import plotly.graph_objects as go
 import streamlit as st
 
 
@@ -151,7 +153,7 @@ tab1, tab2 = st.tabs(["① 연도·상품·시군구 추이", "② 군구별 감
 
 
 # ─────────────────────────────────────────
-# ① 연도·상품·시군구별 추이
+# ① 연도·상품·시군구별 추이 (그래프 위, 표 아래 + 구군별 추세)
 # ─────────────────────────────────────────
 with tab1:
     st.subheader("① 연도·상품·시군구별 가스레인지 수 추이")
@@ -169,7 +171,7 @@ with tab1:
         yearly["전년대비 증감"] / yearly[COL_RANGE_CNT].shift(1) * 100
     ).round(1)
 
-    # 기준연도 대비 증감
+    # 기준연도 대비 증감 / 증감률
     if base_year in yearly["연도"].values:
         base_val = float(
             yearly.loc[yearly["연도"] == base_year, COL_RANGE_CNT].iloc[0]
@@ -182,29 +184,109 @@ with tab1:
         yearly["기준연도 대비 증감"] = np.nan
         yearly["기준연도 대비 증감률(%)"] = np.nan
 
-    c1, c2 = st.columns([2, 3])
+    # ── (1) 연도별 전체 추이 그래프 ──
+    st.markdown("#### 🔹 연도별 가스레인지 수 추이 (상단: 동적 차트, 하단: 숫자표)")
 
-    with c1:
-        st.markdown("**연도별 가스레인지 수 합계 (필터 조건 반영)**")
-        st.dataframe(
-            yearly.set_index("연도"),
-            use_container_width=True,
-            height=400
-        )
+    fig_year = px.line(
+        yearly,
+        x="연도",
+        y=COL_RANGE_CNT,
+        markers=True,
+        title="연도별 가스레인지 수 추이",
+    )
 
-    with c2:
-        fig = px.line(
-            yearly,
+    # 기준연도 / 비교연도 강조선
+    fig_year.add_vline(
+        x=base_year,
+        line_dash="dot",
+        line_width=2,
+        annotation_text=f"기준연도 {base_year}",
+        annotation_position="top left",
+    )
+    fig_year.add_vline(
+        x=comp_year,
+        line_dash="dot",
+        line_width=2,
+        line_color="gray",
+        annotation_text=f"비교연도 {comp_year}",
+        annotation_position="top right",
+    )
+
+    fig_year.update_traces(mode="lines+markers")
+    fig_year.update_layout(
+        yaxis_title="가스레인지 수",
+        xaxis_title="연도",
+        hovermode="x unified",
+        xaxis=dict(
+            type="linear",
+            rangeselector=dict(
+                buttons=list([
+                    dict(count=3, label="최근 3년", step="year", stepmode="backward"),
+                    dict(count=5, label="최근 5년", step="year", stepmode="backward"),
+                    dict(step="all", label="전체")
+                ])
+            ),
+            rangeslider=dict(visible=True)
+        ),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        margin=dict(l=40, r=20, t=60, b=40),
+    )
+
+    st.plotly_chart(fig_year, use_container_width=True)
+
+    # ── (2) 연도별 숫자표 (그래프 하단) ──
+    st.markdown("##### 📊 연도별 가스레인지 수 요약표")
+    st.dataframe(
+        yearly.set_index("연도"),
+        use_container_width=True,
+        height=320
+    )
+
+    st.markdown("---")
+
+    # ── (3) 시군구별 연도별 추이 그래프 ──
+    st.markdown("#### 🔹 시군구별 가스레인지 수 연도 추세")
+
+    # 연도 × 시군구별 합계
+    gu_year = (
+        df.groupby(["연도", COL_DISTRICT], as_index=False)[COL_RANGE_CNT]
+        .sum()
+        .sort_values(["연도", COL_DISTRICT])
+    )
+
+    if gu_year.empty:
+        st.info("현재 필터 조건에 해당하는 데이터가 없다.")
+    else:
+        fig_gu = px.line(
+            gu_year,
             x="연도",
             y=COL_RANGE_CNT,
+            color=COL_DISTRICT,
             markers=True,
-            title="연도별 가스레인지 수 추이",
+            title="시군구별 연도별 가스레인지 수 추이",
         )
-        fig.update_layout(yaxis_title="가스레인지 수", xaxis_title="연도")
-        st.plotly_chart(fig, use_container_width=True)
+        fig_gu.update_layout(
+            yaxis_title="가스레인지 수",
+            xaxis_title="연도",
+            hovermode="x unified",
+            xaxis=dict(
+                type="linear",
+                rangeslider=dict(visible=False)
+            ),
+            legend=dict(
+                title="시군구",
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+            margin=dict(l=40, r=20, t=60, b=40),
+        )
+        st.plotly_chart(fig_gu, use_container_width=True)
 
-    st.markdown("### 세부 피벗테이블 (연도 × 용도 × 상품 × 시군구)")
-
+    # ── (4) 세부 피벗 테이블 (옵션용) ──
+    st.markdown("##### 📑 세부 피벗테이블 (연도 × 용도 × 상품 × 시군구)")
     pivot = (
         df.pivot_table(
             index=["연도", COL_USAGE, COL_PRODUCT, COL_DISTRICT],
@@ -218,7 +300,7 @@ with tab1:
     st.dataframe(
         pivot,
         use_container_width=True,
-        height=500
+        height=400
     )
 
 
