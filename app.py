@@ -29,7 +29,10 @@ COL_YEAR_MONTH = "구분"        # 201501, 201502 …
 COL_USAGE = "용도"             # 단독주택 / 공동주택
 COL_PRODUCT = "상품"           # 취사용 / 취사난방용 / 개별난방용
 COL_DISTRICT = "시군구"        # 중구 / 동구 / 경산시 …
-COL_RANGE_CNT = "가스레인지수"   # 엑셀 컬럼명에 맞춰서 사용
+COL_RANGE_CNT = "가스레인지수"   # 엑셀에 맞게 필요하면 수정
+
+# GeoJSON 쪽 행정구역 이름 필드명
+GEO_NAME_FIELD = "ADZONE_NM"
 
 # 대구 + 경산 시군구 목록 (표/지도 정렬 기준)
 TARGET_SIGUNGU = [
@@ -95,8 +98,34 @@ def load_geojson():
         return None
 
 
+@st.cache_data
+def build_geo_name_map(geojson_obj, name_field: str, short_names: list[str]) -> dict:
+    """
+    GeoJSON의 행정구역 전체 이름(예: '대구광역시 중구')과
+    엑셀의 짧은 이름(예: '중구')를 매칭하기 위한 dict 생성.
+    """
+    if geojson_obj is None:
+        return {}
+
+    full_names = []
+    for feat in geojson_obj.get("features", []):
+        props = feat.get("properties", {})
+        val = props.get(name_field)
+        if isinstance(val, str):
+            full_names.append(val.strip())
+
+    mapping: dict[str, str] = {}
+    for full in full_names:
+        short = full.split()[-1]  # 마지막 토큰: 중구, 동구, 경산시 등
+        if short in short_names and short not in mapping:
+            mapping[short] = full
+
+    return mapping
+
+
 df_raw = load_data()
 geojson = load_geojson()
+GEO_NAME_MAP = build_geo_name_map(geojson, GEO_NAME_FIELD, TARGET_SIGUNGU)
 
 years = sorted(df_raw["연도"].unique())
 usage_list = sorted(df_raw[COL_USAGE].unique())
@@ -505,6 +534,11 @@ with tab2:
             }
         )
 
+        # GeoJSON 속성(ADZONE_NM)에 맞는 전체 행정명 컬럼 생성
+        map_table["행정구역명"] = map_table["시군구"].map(
+            lambda x: GEO_NAME_MAP.get(x, x)
+        )
+
         c1, c2 = st.columns([2, 3])
 
         # 표
@@ -544,11 +578,10 @@ with tab2:
                 fig_map = px.choropleth(
                     map_table,
                     geojson=geojson,
-                    locations="시군구",                  # DataFrame 키
-                    featureidkey="properties.ADZONE_NM",  # GeoJSON 속성 키 (시군구 이름)
+                    locations="행정구역명",                    # GeoJSON의 ADZONE_NM과 매칭되는 풀 네임
+                    featureidkey=f"properties.{GEO_NAME_FIELD}",
                     color="감소량(기준-비교)",
-                    color_continuous_midpoint=0,
-                    hover_name="시군구",
+                    hover_name="시군구",                      # 툴팁에는 짧은 이름 표시
                     hover_data={
                         f"{base_year}년 가스레인지 수(연간합계)": ":,",
                         f"{comp_year}년 가스레인지 수(연간합계)": ":,",
