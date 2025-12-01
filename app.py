@@ -44,10 +44,8 @@ TARGET_SIGUNGU = [
 @st.cache_data
 def load_data() -> pd.DataFrame:
     """엑셀 원시파일에서 분석용 데이터프레임 생성"""
-    # 1) 헤더 없는 상태로 전체 읽기 (위에 기간 설명 행 등 포함)
     raw = pd.read_excel(DATA_PATH, sheet_name=0, header=None)
 
-    # 2) 첫 열에서 '구분'이 있는 행을 찾아 헤더로 사용
     first_col = raw.iloc[:, 0].astype(str).str.strip()
     header_rows = first_col[first_col == COL_YEAR_MONTH].index.tolist()
     if not header_rows:
@@ -55,22 +53,17 @@ def load_data() -> pd.DataFrame:
         st.stop()
     header_idx = header_rows[0]
 
-    # 3) 헤더/데이터 분리
     header = raw.iloc[header_idx].tolist()
     df = raw.iloc[header_idx + 1:].copy()
     df.columns = header
     df = df.dropna(how="all")
 
-    # 4) 구분 → 연도, 월
     df[COL_YEAR_MONTH] = df[COL_YEAR_MONTH].astype(str).str.strip()
     df["연도"] = df[COL_YEAR_MONTH].str[:4].astype(int)
     df["월"] = df[COL_YEAR_MONTH].str[4:6].astype(int)
 
-    # 5) 가스레인지 수 숫자 변환
     df[COL_RANGE_CNT] = (
-        df[COL_RANGE_CNT]
-        .astype(str)
-        .str.replace(",", "", regex=False)
+        df[COL_RANGE_CNT].astype(str).str.replace(",", "", regex=False)
     )
     df[COL_RANGE_CNT] = (
         pd.to_numeric(df[COL_RANGE_CNT], errors="coerce")
@@ -78,7 +71,6 @@ def load_data() -> pd.DataFrame:
         .astype(int)
     )
 
-    # 6) 문자열 컬럼 정리
     for c in [COL_USAGE, COL_PRODUCT, COL_DISTRICT]:
         df[c] = df[c].astype(str).str.strip()
 
@@ -151,7 +143,6 @@ tab1, tab2 = st.tabs(["① 월별·연도별 추이", "② 군구별 감소량 �
 with tab1:
     st.subheader("① 월별·연도별 가스레인지 수 추이")
 
-    # 월 단위 집계
     month_series = (
         df.groupby(COL_YEAR_MONTH, as_index=False)[COL_RANGE_CNT]
         .sum()
@@ -162,7 +153,6 @@ with tab1:
     if month_series.empty:
         st.info("현재 필터 조건에 해당하는 데이터가 없어.")
     else:
-        # 월 정점
         peak_idx_m = month_series[COL_RANGE_CNT].idxmax()
         peak_date_m = month_series.loc[peak_idx_m, "date"]
         peak_val_m = float(month_series.loc[peak_idx_m, COL_RANGE_CNT])
@@ -171,7 +161,6 @@ with tab1:
         start_label = month_series["date"].iloc[0].strftime("%Y.%m")
         end_label = month_series["date"].iloc[-1].strftime("%Y.%m")
 
-        # 연도별 요약 (연간합계, 월평균)
         year_month = (
             df.groupby(["연도", COL_YEAR_MONTH], as_index=False)[COL_RANGE_CNT]
             .sum()
@@ -183,7 +172,6 @@ with tab1:
             .sort_values("연도")
         )
 
-        # 연간 정점/마지막
         peak_idx_y = yearly["연간합계"].idxmax()
         peak_year_y = int(yearly.loc[peak_idx_y, "연도"])
         peak_val_y = float(yearly.loc[peak_idx_y, "연간합계"])
@@ -191,13 +179,11 @@ with tab1:
         last_val_y = float(yearly["연간합계"].iloc[-1])
         decline_pct_y = (last_val_y / peak_val_y - 1.0) * 100
 
-        # 전년 대비 (월평균 기준)
         yearly["전년대비 증감"] = yearly["월평균"].diff()
         yearly["전년대비 증감률(%)"] = (
             yearly["전년대비 증감"] / yearly["월평균"].shift(1) * 100
         ).round(1)
 
-        # 기준연도 대비 (월평균 기준)
         if base_year in yearly["연도"].values:
             base_val = float(
                 yearly.loc[yearly["연도"] == base_year, "월평균"].iloc[0]
@@ -210,7 +196,6 @@ with tab1:
             yearly["기준연도 대비 증감"] = np.nan
             yearly["기준연도 대비 증감률(%)"] = np.nan
 
-        # 월간 마지막 값 정점 대비
         last_date_m = month_series["date"].iloc[-1]
         last_val_m = float(month_series[COL_RANGE_CNT].iloc[-1])
         decline_pct_m = (last_val_m / peak_val_m - 1.0) * 100
@@ -225,13 +210,11 @@ with tab1:
 
         show_month = st.checkbox("월간 추이 함께 보기 (YYYY.MM)", value=False)
 
-        # ─ 연간 그래프 ─
         yearly_graph = yearly[["연도", "연간합계"]].copy()
         pre_mask_y = yearly_graph["연도"] <= peak_year_y
         post_mask_y = yearly_graph["연도"] >= peak_year_y
 
         fig_year_ts = go.Figure()
-
         fig_year_ts.add_trace(
             go.Scatter(
                 x=yearly_graph.loc[pre_mask_y, "연도"],
@@ -297,7 +280,6 @@ with tab1:
         )
         st.plotly_chart(fig_year_ts, use_container_width=True)
 
-        # ─ 월간 그래프 (옵션) ─
         if show_month:
             pre_mask_m = month_series["date"] <= peak_date_m
             post_mask_m = month_series["date"] >= peak_date_m
@@ -379,7 +361,6 @@ with tab1:
 
         st.markdown("---")
 
-        # 연도별 요약표
         st.markdown("#### 🔹 연도별 가스레인지 수 요약 (월평균·연간합계 기준)")
         yearly_table = yearly.copy().set_index("연도")
 
@@ -401,7 +382,6 @@ with tab1:
 
         st.markdown("---")
 
-        # 시군구별 연도 추세 (연간합계)
         st.markdown("#### 🔹 시군구별 가스레인지 수 연도 추세 (연간합계 기준)")
         gu_year = (
             df.groupby(["연도", COL_DISTRICT], as_index=False)[COL_RANGE_CNT]
@@ -437,7 +417,6 @@ with tab1:
 
         st.markdown("---")
 
-        # 연도×월 히트맵
         st.markdown("#### 🔹 연도 × 월 패턴 히트맵")
         monthly_for_heat = (
             df.groupby(["연도", "월"], as_index=False)[COL_RANGE_CNT]
@@ -461,7 +440,6 @@ with tab1:
 with tab2:
     st.subheader("② 기준연도 대비 군구별 가스레인지 감소량 지도 (대구 + 경산)")
 
-    # usage / product 필터 적용 + 대구+경산 시군구만 사용
     df_map = df_raw.copy()
     df_map = df_map[df_map[COL_USAGE].isin(usage_sel)]
     df_map = df_map[df_map[COL_PRODUCT].isin(product_sel)]
@@ -505,9 +483,22 @@ with tab2:
             }
         )
 
+        # ── 디버그: GeoJSON 속 이름과 데이터프레임 이름 비교 ──
+        if geojson is not None:
+            geo_names = sorted(
+                {feat["properties"].get("ADZONE_NM", "").strip()
+                 for feat in geojson["features"]}
+            )
+            data_names = sorted({name.strip() for name in map_table["시군구"].unique()})
+            missing_in_geo = sorted(set(data_names) - set(geo_names))
+            if missing_in_geo:
+                st.warning("GeoJSON에 없는 시군구: " + ", ".join(missing_in_geo))
+            extra_in_geo = sorted(set(geo_names) - set(data_names))
+            if extra_in_geo:
+                st.info("데이터에는 없고 GeoJSON에만 있는 시군구: " + ", ".join(extra_in_geo))
+
         c1, c2 = st.columns([2, 3])
 
-        # 표
         with c1:
             st.markdown(
                 f"**대구시 구·군 + 경산시 시군구별 가스레인지 수 및 변화 (연간합계 기준)**  \n"
@@ -533,7 +524,6 @@ with tab2:
                 height=450,
             )
 
-        # 지도
         with c2:
             if geojson is None:
                 st.warning(
@@ -541,16 +531,11 @@ with tab2:
                     "daegu_gyeongsan_sgg.geojson 파일이 data 폴더에 있는지 확인해줘."
                 )
             else:
-                # 감소량 절대값 기준으로 양/음 발산형 색상 스케일 설정
-                max_abs = float(
-                    np.nanmax(np.abs(map_table["감소량(기준-비교)"].values))
-                )
-
                 fig_map = px.choropleth(
                     map_table,
                     geojson=geojson,
-                    locations="시군구",                 # DataFrame 키
-                    featureidkey="properties.ADZONE_NM",  # GeoJSON 속성 키 (시군구 이름)
+                    locations="시군구",
+                    featureidkey="properties.ADZONE_NM",
                     color="감소량(기준-비교)",
                     hover_name="시군구",
                     hover_data={
@@ -560,18 +545,15 @@ with tab2:
                         "감소율(%)": True,
                     },
                     title=f"{base_year}년 → {comp_year}년 대구시 구·군 + 경산시 시군구별 가스레인지 감소량",
-                    color_continuous_scale=px.colors.diverging.RdBu_r,
-                    range_color=(-max_abs, max_abs),
-                    color_continuous_midpoint=0,
-                )
-
-                # 시군구 경계선 강조
-                fig_map.update_traces(
-                    marker_line_color="black",
-                    marker_line_width=1,
+                    color_continuous_scale="Blues",
                 )
 
                 fig_map.update_geos(fitbounds="locations", visible=False)
+                fig_map.update_traces(
+                    marker_line_color="black",
+                    marker_line_width=0.8,
+                    selector=dict(type="choropleth"),
+                )
                 fig_map.update_layout(
                     margin=dict(l=0, r=0, t=40, b=0),
                     coloraxis_colorbar=dict(title="감소량"),
