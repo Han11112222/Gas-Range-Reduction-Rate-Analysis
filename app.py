@@ -29,7 +29,7 @@ COL_YEAR_MONTH = "구분"        # 201501, 201502 …
 COL_USAGE = "용도"             # 단독주택 / 공동주택
 COL_PRODUCT = "상품"           # 취사용 / 취사난방용 / 개별난방용
 COL_DISTRICT = "시군구"        # 중구 / 동구 / 경산시 …
-COL_RANGE_CNT = "가스레인지수"   # 엑셀에 맞게 필요하면 수정
+COL_RANGE_CNT = "가스레인지수"   # 엑셀 컬럼명에 맞춰서 사용
 
 # 대구 + 경산 시군구 목록 (표/지도 정렬 기준)
 TARGET_SIGUNGU = [
@@ -544,9 +544,10 @@ with tab2:
                 fig_map = px.choropleth(
                     map_table,
                     geojson=geojson,
-                    locations="시군구",                 # DataFrame 키
+                    locations="시군구",                  # DataFrame 키
                     featureidkey="properties.ADZONE_NM",  # GeoJSON 속성 키 (시군구 이름)
                     color="감소량(기준-비교)",
+                    color_continuous_midpoint=0,
                     hover_name="시군구",
                     hover_data={
                         f"{base_year}년 가스레인지 수(연간합계)": ":,",
