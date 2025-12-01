@@ -44,9 +44,10 @@ TARGET_SIGUNGU = [
 @st.cache_data
 def load_data() -> pd.DataFrame:
     """엑셀 원시파일에서 분석용 데이터프레임 생성"""
+    # 1) 헤더 없는 상태로 전체 읽기 (위에 기간 설명 행 등 포함)
     raw = pd.read_excel(DATA_PATH, sheet_name=0, header=None)
 
-    # 첫 열에서 '구분'이 있는 행을 찾아 헤더로 사용
+    # 2) 첫 열에서 '구분'이 있는 행을 찾아 헤더로 사용
     first_col = raw.iloc[:, 0].astype(str).str.strip()
     header_rows = first_col[first_col == COL_YEAR_MONTH].index.tolist()
     if not header_rows:
@@ -54,17 +55,18 @@ def load_data() -> pd.DataFrame:
         st.stop()
     header_idx = header_rows[0]
 
+    # 3) 헤더/데이터 분리
     header = raw.iloc[header_idx].tolist()
     df = raw.iloc[header_idx + 1:].copy()
     df.columns = header
     df = df.dropna(how="all")
 
-    # 구분 → 연도, 월
+    # 4) 구분 → 연도, 월
     df[COL_YEAR_MONTH] = df[COL_YEAR_MONTH].astype(str).str.strip()
     df["연도"] = df[COL_YEAR_MONTH].str[:4].astype(int)
     df["월"] = df[COL_YEAR_MONTH].str[4:6].astype(int)
 
-    # 가스레인지 수 숫자 변환
+    # 5) 가스레인지 수 숫자 변환
     df[COL_RANGE_CNT] = (
         df[COL_RANGE_CNT]
         .astype(str)
@@ -76,7 +78,7 @@ def load_data() -> pd.DataFrame:
         .astype(int)
     )
 
-    # 문자열 컬럼 정리
+    # 6) 문자열 컬럼 정리
     for c in [COL_USAGE, COL_PRODUCT, COL_DISTRICT]:
         df[c] = df[c].astype(str).str.strip()
 
@@ -85,24 +87,12 @@ def load_data() -> pd.DataFrame:
 
 @st.cache_data
 def load_geojson():
-    """
-    대구+경산 시군구 GeoJSON 로딩
-    - 각 feature에 id = ADZONE_NM 을 달아서 plotly 기본 매칭키로 사용
-    """
+    """대구+경산 시군구 GeoJSON 로딩"""
     try:
         with open(GEO_PATH, encoding="utf-8") as f:
-            gj = json.load(f)
+            return json.load(f)
     except FileNotFoundError:
         return None
-
-    # feature.id 에 시군구 이름(ADZONE_NM) 넣기
-    for feat in gj.get("features", []):
-        props = feat.get("properties", {})
-        name = props.get("ADZONE_NM")
-        if name is not None:
-            feat["id"] = name  # choropleth 에서 locations 와 매칭되는 키
-
-    return gj
 
 
 df_raw = load_data()
@@ -551,10 +541,16 @@ with tab2:
                     "daegu_gyeongsan_sgg.geojson 파일이 data 폴더에 있는지 확인해줘."
                 )
             else:
+                # 감소량 절대값 기준으로 양/음 발산형 색상 스케일 설정
+                max_abs = float(
+                    np.nanmax(np.abs(map_table["감소량(기준-비교)"].values))
+                )
+
                 fig_map = px.choropleth(
                     map_table,
                     geojson=geojson,
-                    locations="시군구",        # -> GeoJSON feature.id 와 매칭
+                    locations="시군구",                 # DataFrame 키
+                    featureidkey="properties.ADZONE_NM",  # GeoJSON 속성 키 (시군구 이름)
                     color="감소량(기준-비교)",
                     hover_name="시군구",
                     hover_data={
@@ -564,11 +560,18 @@ with tab2:
                         "감소율(%)": True,
                     },
                     title=f"{base_year}년 → {comp_year}년 대구시 구·군 + 경산시 시군구별 가스레인지 감소량",
+                    color_continuous_scale=px.colors.diverging.RdBu_r,
+                    range_color=(-max_abs, max_abs),
+                    color_continuous_midpoint=0,
                 )
-                fig_map.update_geos(
-                    fitbounds="locations",
-                    visible=False,
+
+                # 시군구 경계선 강조
+                fig_map.update_traces(
+                    marker_line_color="black",
+                    marker_line_width=1,
                 )
+
+                fig_map.update_geos(fitbounds="locations", visible=False)
                 fig_map.update_layout(
                     margin=dict(l=0, r=0, t=40, b=0),
                     coloraxis_colorbar=dict(title="감소량"),
