@@ -25,13 +25,13 @@ DATA_PATH = Path(__file__).parent / "(ver2)가정용_가스레인지_사용유�
 GEO_PATH = Path(__file__).parent / "data" / "daegu_gyeongsan_sgg.geojson"
 
 # 엑셀 컬럼 이름
-COL_YEAR_MONTH = "구분"       # 201501, 201502 …
-COL_USAGE = "용도"            # 단독주택 / 공동주택
-COL_PRODUCT = "상품"          # 취사용 / 취사난방용 / 개별난방용
-COL_DISTRICT = "시군구"       # 중구 / 동구 / 경산시 …
-COL_RANGE_CNT = "가스레인지수"  # 엑셀에 맞게 필요하면 수정
+COL_YEAR_MONTH = "구분"        # 201501, 201502 …
+COL_USAGE = "용도"             # 단독주택 / 공동주택
+COL_PRODUCT = "상품"           # 취사용 / 취사난방용 / 개별난방용
+COL_DISTRICT = "시군구"        # 중구 / 동구 / 경산시 …
+COL_RANGE_CNT = "가스레인지수"   # 엑셀에 맞게 필요하면 수정
 
-# 대구 + 경산 시군구 목록
+# 대구 + 경산 시군구 목록 (표/지도 정렬 기준)
 TARGET_SIGUNGU = [
     "중구", "동구", "서구", "남구", "북구",
     "수성구", "달서구", "달성군",
@@ -43,6 +43,7 @@ TARGET_SIGUNGU = [
 # ─────────────────────────────────────
 @st.cache_data
 def load_data() -> pd.DataFrame:
+    """엑셀 원시파일에서 분석용 데이터프레임 생성"""
     # 1) 헤더 없는 상태로 전체 읽기 (위에 기간 설명 행 등 포함)
     raw = pd.read_excel(DATA_PATH, sheet_name=0, header=None)
 
@@ -71,7 +72,11 @@ def load_data() -> pd.DataFrame:
         .astype(str)
         .str.replace(",", "", regex=False)
     )
-    df[COL_RANGE_CNT] = pd.to_numeric(df[COL_RANGE_CNT], errors="coerce").fillna(0).astype(int)
+    df[COL_RANGE_CNT] = (
+        pd.to_numeric(df[COL_RANGE_CNT], errors="coerce")
+        .fillna(0)
+        .astype(int)
+    )
 
     # 6) 문자열 컬럼 정리
     for c in [COL_USAGE, COL_PRODUCT, COL_DISTRICT]:
@@ -82,10 +87,10 @@ def load_data() -> pd.DataFrame:
 
 @st.cache_data
 def load_geojson():
+    """대구+경산 시군구 GeoJSON 로딩"""
     try:
         with open(GEO_PATH, encoding="utf-8") as f:
-            gj = json.load(f)
-        return gj
+            return json.load(f)
     except FileNotFoundError:
         return None
 
@@ -139,7 +144,6 @@ st.sidebar.write(f"데이터 행 수: **{len(df):,}**")
 # 탭 구성
 # ─────────────────────────────────────
 tab1, tab2 = st.tabs(["① 월별·연도별 추이", "② 군구별 감소량 지도"])
-
 
 # ─────────────────────────────────────
 # ① 월별·연도별 추이
@@ -451,7 +455,6 @@ with tab1:
         fig_heat.update_xaxes(side="top")
         st.plotly_chart(fig_heat, use_container_width=True)
 
-
 # ─────────────────────────────────────
 # ② 군구별 감소량 지도 (대구 전 구·군 + 경산시)
 # ─────────────────────────────────────
@@ -535,14 +538,14 @@ with tab2:
             if geojson is None:
                 st.warning(
                     f"대구+경산 GeoJSON({GEO_PATH})을 찾을 수 없어서 지도를 그릴 수 없어.  "
-                    "전처리 스크립트로 daegu_gyeongsan_sgg.geojson을 먼저 만들어줘."
+                    "daegu_gyeongsan_sgg.geojson 파일이 data 폴더에 있는지 확인해줘."
                 )
             else:
                 fig_map = px.choropleth(
                     map_table,
                     geojson=geojson,
-                    locations="시군구",               # 데이터프레임 키
-                    featureidkey="properties.시군구",  # GeoJSON 속성 키
+                    locations="시군구",                 # DataFrame 키
+                    featureidkey="properties.ADZONE_NM",  # GeoJSON 속성 키 (시군구 이름)
                     color="감소량(기준-비교)",
                     hover_name="시군구",
                     hover_data={
