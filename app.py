@@ -31,9 +31,6 @@ COL_PRODUCT = "상품"           # 취사용 / 취사난방용 / 개별난방용
 COL_DISTRICT = "시군구"        # 중구 / 동구 / 경산시 …
 COL_RANGE_CNT = "가스레인지수"   # 엑셀에 맞게 필요하면 수정
 
-# GeoJSON 쪽 행정구역 이름 필드명
-GEO_NAME_FIELD = "ADZONE_NM"
-
 # 대구 + 경산 시군구 목록 (표/지도 정렬 기준)
 TARGET_SIGUNGU = [
     "중구", "동구", "서구", "남구", "북구",
@@ -47,10 +44,9 @@ TARGET_SIGUNGU = [
 @st.cache_data
 def load_data() -> pd.DataFrame:
     """엑셀 원시파일에서 분석용 데이터프레임 생성"""
-    # 1) 헤더 없는 상태로 전체 읽기 (위에 기간 설명 행 등 포함)
     raw = pd.read_excel(DATA_PATH, sheet_name=0, header=None)
 
-    # 2) 첫 열에서 '구분'이 있는 행을 찾아 헤더로 사용
+    # 첫 열에서 '구분'이 있는 행을 찾아 헤더로 사용
     first_col = raw.iloc[:, 0].astype(str).str.strip()
     header_rows = first_col[first_col == COL_YEAR_MONTH].index.tolist()
     if not header_rows:
@@ -58,18 +54,17 @@ def load_data() -> pd.DataFrame:
         st.stop()
     header_idx = header_rows[0]
 
-    # 3) 헤더/데이터 분리
     header = raw.iloc[header_idx].tolist()
     df = raw.iloc[header_idx + 1:].copy()
     df.columns = header
     df = df.dropna(how="all")
 
-    # 4) 구분 → 연도, 월
+    # 구분 → 연도, 월
     df[COL_YEAR_MONTH] = df[COL_YEAR_MONTH].astype(str).str.strip()
     df["연도"] = df[COL_YEAR_MONTH].str[:4].astype(int)
     df["월"] = df[COL_YEAR_MONTH].str[4:6].astype(int)
 
-    # 5) 가스레인지 수 숫자 변환
+    # 가스레인지 수 숫자 변환
     df[COL_RANGE_CNT] = (
         df[COL_RANGE_CNT]
         .astype(str)
@@ -81,7 +76,7 @@ def load_data() -> pd.DataFrame:
         .astype(int)
     )
 
-    # 6) 문자열 컬럼 정리
+    # 문자열 컬럼 정리
     for c in [COL_USAGE, COL_PRODUCT, COL_DISTRICT]:
         df[c] = df[c].astype(str).str.strip()
 
@@ -90,42 +85,28 @@ def load_data() -> pd.DataFrame:
 
 @st.cache_data
 def load_geojson():
-    """대구+경산 시군구 GeoJSON 로딩"""
+    """
+    대구+경산 시군구 GeoJSON 로딩
+    - 각 feature에 id = ADZONE_NM 을 달아서 plotly 기본 매칭키로 사용
+    """
     try:
         with open(GEO_PATH, encoding="utf-8") as f:
-            return json.load(f)
+            gj = json.load(f)
     except FileNotFoundError:
         return None
 
-
-@st.cache_data
-def build_geo_name_map(geojson_obj, name_field: str, short_names: list[str]) -> dict:
-    """
-    GeoJSON의 행정구역 전체 이름(예: '대구광역시 중구')과
-    엑셀의 짧은 이름(예: '중구')를 매칭하기 위한 dict 생성.
-    """
-    if geojson_obj is None:
-        return {}
-
-    full_names = []
-    for feat in geojson_obj.get("features", []):
+    # feature.id 에 시군구 이름(ADZONE_NM) 넣기
+    for feat in gj.get("features", []):
         props = feat.get("properties", {})
-        val = props.get(name_field)
-        if isinstance(val, str):
-            full_names.append(val.strip())
+        name = props.get("ADZONE_NM")
+        if name is not None:
+            feat["id"] = name  # choropleth 에서 locations 와 매칭되는 키
 
-    mapping: dict[str, str] = {}
-    for full in full_names:
-        short = full.split()[-1]  # 마지막 토큰: 중구, 동구, 경산시 등
-        if short in short_names and short not in mapping:
-            mapping[short] = full
-
-    return mapping
+    return gj
 
 
 df_raw = load_data()
 geojson = load_geojson()
-GEO_NAME_MAP = build_geo_name_map(geojson, GEO_NAME_FIELD, TARGET_SIGUNGU)
 
 years = sorted(df_raw["연도"].unique())
 usage_list = sorted(df_raw[COL_USAGE].unique())
@@ -534,11 +515,6 @@ with tab2:
             }
         )
 
-        # GeoJSON 속성(ADZONE_NM)에 맞는 전체 행정명 컬럼 생성
-        map_table["행정구역명"] = map_table["시군구"].map(
-            lambda x: GEO_NAME_MAP.get(x, x)
-        )
-
         c1, c2 = st.columns([2, 3])
 
         # 표
@@ -578,10 +554,9 @@ with tab2:
                 fig_map = px.choropleth(
                     map_table,
                     geojson=geojson,
-                    locations="행정구역명",                    # GeoJSON의 ADZONE_NM과 매칭되는 풀 네임
-                    featureidkey=f"properties.{GEO_NAME_FIELD}",
+                    locations="시군구",        # -> GeoJSON feature.id 와 매칭
                     color="감소량(기준-비교)",
-                    hover_name="시군구",                      # 툴팁에는 짧은 이름 표시
+                    hover_name="시군구",
                     hover_data={
                         f"{base_year}년 가스레인지 수(연간합계)": ":,",
                         f"{comp_year}년 가스레인지 수(연간합계)": ":,",
@@ -590,7 +565,10 @@ with tab2:
                     },
                     title=f"{base_year}년 → {comp_year}년 대구시 구·군 + 경산시 시군구별 가스레인지 감소량",
                 )
-                fig_map.update_geos(fitbounds="locations", visible=False)
+                fig_map.update_geos(
+                    fitbounds="locations",
+                    visible=False,
+                )
                 fig_map.update_layout(
                     margin=dict(l=0, r=0, t=40, b=0),
                     coloraxis_colorbar=dict(title="감소량"),
