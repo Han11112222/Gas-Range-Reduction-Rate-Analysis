@@ -593,3 +593,138 @@ with tab2:
         - **감소율(%)** : 감소량 ÷ 기준연도 연간 가스레인지 수 × 100
         """
     )
+# ─────────────────────────────────────────
+# ③ 대구시 구·군 + 경산시 전체 비교 (지도 + 표)
+#    - 대구시 8개 구·군 + 경산시를 한 화면에서 보고 싶을 때 사용
+# ─────────────────────────────────────────
+
+st.markdown("---")
+st.subheader("③ 대구시 구·군 + 경산시 전체 비교 (시군구별 지도 + 표)")
+
+# 1) 대구 + 경산 시군구 목록 정의
+TARGET_SIGUNGU = [
+    "중구", "동구", "서구", "남구", "북구",
+    "수성구", "달서구", "달성군",
+    "경산시",
+]
+
+# 2) usage / product 필터는 그대로 반영하고,
+#    시군구 필터는 '대구+경산 전체'를 보고 싶으니 여기서는 무시하고 다시 집계
+df_dg_gs = df_raw.copy()
+df_dg_gs = df_dg_gs[df_dg_gs[COL_USAGE].isin(usage_sel)]
+df_dg_gs = df_dg_gs[df_dg_gs[COL_PRODUCT].isin(product_sel)]
+df_dg_gs = df_dg_gs[df_dg_gs[COL_DISTRICT].isin(TARGET_SIGUNGU)]
+
+# 기준연도 / 비교연도만 사용 (연간합계 기준)
+map_df2 = df_dg_gs[df_dg_gs["연도"].isin([base_year, comp_year])]
+
+if map_df2.empty:
+    st.info("현재 필터 조건(용도/상품)에 해당하는 대구+경산 데이터가 없습니다.")
+else:
+    # 3) 시군구 × 연도별 연간합계 집계
+    grouped2 = (
+        map_df2
+        .groupby(["연도", COL_DISTRICT], as_index=False)[COL_RANGE_CNT]
+        .sum()
+    )
+
+    # 4) wide 형태로 pivot → 기준/비교 연도, 감소량·감소율 계산
+    pivot_map2 = (
+        grouped2
+        .pivot(index=COL_DISTRICT, columns="연도", values=COL_RANGE_CNT)
+        .reindex(index=TARGET_SIGUNGU)   # 시군구 순서 고정
+        .fillna(0)
+    )
+
+    if base_year not in pivot_map2.columns:
+        pivot_map2[base_year] = 0
+    if comp_year not in pivot_map2.columns:
+        pivot_map2[comp_year] = 0
+
+    pivot_map2["감소량(기준-비교)"] = pivot_map2[base_year] - pivot_map2[comp_year]
+    pivot_map2["감소율(%)"] = np.where(
+        pivot_map2[base_year] > 0,
+        pivot_map2["감소량(기준-비교)"] / pivot_map2[base_year] * 100,
+        np.nan,
+    )
+    pivot_map2["감소율(%)"] = pivot_map2["감소율(%)"].round(1)
+
+    map_table2 = pivot_map2.reset_index().rename(
+        columns={
+            COL_DISTRICT: "시군구",
+            base_year: f"{base_year}년 가스레인지 수(연간합계)",
+            comp_year: f"{comp_year}년 가스레인지 수(연간합계)",
+        }
+    )
+
+    # 5) 레이아웃: 좌측 표, 우측 지도
+    c1, c2 = st.columns([2, 3])
+
+    with c1:
+        st.markdown(
+            f"**대구시 구·군 + 경산시 시군구별 가스레인지 수 및 변화 (연간합계 기준)**  \n"
+            f"(기준연도: {base_year}년, 비교연도: {comp_year}년)"
+        )
+
+        # 숫자 포맷 조금 정리 (천단위 콤마, 감소율은 1자리)
+        df_show = map_table2.copy()
+        int_cols = [
+            f"{base_year}년 가스레인지 수(연간합계)",
+            f"{comp_year}년 가스레인지 수(연간합계)",
+            "감소량(기준-비교)",
+        ]
+        for col in int_cols:
+            df_show[col] = df_show[col].apply(lambda x: f"{int(x):,}")
+
+        df_show["감소율(%)"] = df_show["감소율(%)"].apply(
+            lambda x: "" if pd.isna(x) else f"{x:.1f}"
+        )
+
+        st.dataframe(
+            df_show.set_index("시군구"),
+            use_container_width=True,
+            height=450,
+        )
+
+    with c2:
+        # 6) 대구+경산 GeoJSON 로드 후 지도 시각화
+        geo_path_dg_gs = Path(__file__).parent / "data" / "daegu_gyeongsan_sgg.geojson"
+
+        try:
+            with open(geo_path_dg_gs, encoding="utf-8") as f:
+                geojson_dg_gs = json.load(f)
+        except FileNotFoundError:
+            st.warning(
+                f"GeoJSON 파일을 찾을 수 없습니다: {geo_path_dg_gs}  \n"
+                "전처리 스크립트로 daegu_gyeongsan_sgg.geojson 을 먼저 생성해 주세요."
+            )
+        else:
+            fig_map2 = px.choropleth(
+                map_table2,
+                geojson=geojson_dg_gs,
+                locations="시군구",                   # 데이터프레임 키
+                featureidkey="properties.시군구",     # GeoJSON 속성 키 (전처리에서 생성)
+                color="감소량(기준-비교)",
+                hover_name="시군구",
+                hover_data={
+                    f"{base_year}년 가스레인지 수(연간합계)": ":,",
+                    f"{comp_year}년 가스레인지 수(연간합계)": ":,",
+                    "감소량(기준-비교)": ":,",
+                    "감소율(%)": True,
+                },
+                title=f"{base_year}년 → {comp_year}년 대구시 구·군 + 경산시 시군구별 가스레인지 변화",
+            )
+            fig_map2.update_geos(fitbounds="locations", visible=False)
+            fig_map2.update_layout(
+                margin=dict(l=0, r=0, t=40, b=0),
+                coloraxis_colorbar=dict(title="감소량"),
+            )
+            st.plotly_chart(fig_map2, use_container_width=True)
+
+    st.markdown(
+        """
+        - **감소량(기준-비교)** : 기준연도 연간 가스레인지 수 − 비교연도 연간 가스레인지 수  
+        - **감소율(%)** : 감소량 ÷ 기준연도 연간 가스레인지 수 × 100  
+        - 시군구 필터는 무시하고 **대구 전체 + 경산시**를 항상 모두 보여줍니다.
+        """
+    )
