@@ -1,5 +1,5 @@
 # app.py ─ 가정용 가스레인지 감소 분석 (대구)
-# - 월별 가스레인지 수 시계열 (YYYY.MM, 정점 이후 하이라이트)
+# - 월별/연간 가스레인지 수 시계열 (활성화 버튼으로 선택)
 # - 연도별 요약표 (월평균·연간합계)
 # - 시군구별 연도별 추이
 # - 월 패턴 히트맵
@@ -161,7 +161,7 @@ tab1, tab2 = st.tabs(["① 월별·연도별 추이", "② 군구별 감소량 �
 with tab1:
     st.subheader("① 월별·연도별 가스레인지 수 추이")
 
-    # ── (A) 월별 시계열 (YYYY.MM 단위) ─────────────────────
+    # ── 공통: 월별/연간 집계 미리 계산 ─────────────────────
     # 월(YYYYMM) 단위 집계
     month_series = (
         df.groupby(COL_YEAR_MONTH, as_index=False)[COL_RANGE_CNT]
@@ -170,108 +170,16 @@ with tab1:
     month_series["date"] = pd.to_datetime(month_series[COL_YEAR_MONTH], format="%Y%m")
     month_series = month_series.sort_values("date")
 
-    # 정점(최대 월) 찾기
-    peak_idx = month_series[COL_RANGE_CNT].idxmax()
-    peak_date = month_series.loc[peak_idx, "date"]
-    peak_val = float(month_series.loc[peak_idx, COL_RANGE_CNT])
-    peak_label = peak_date.strftime("%Y.%m")
+    # 월 시계열 정점
+    peak_idx_m = month_series[COL_RANGE_CNT].idxmax()
+    peak_date_m = month_series.loc[peak_idx_m, "date"]
+    peak_val_m = float(month_series.loc[peak_idx_m, COL_RANGE_CNT])
+    peak_label_m = peak_date_m.strftime("%Y.%m")
 
     start_label = month_series["date"].iloc[0].strftime("%Y.%m")
     end_label = month_series["date"].iloc[-1].strftime("%Y.%m")
 
-    st.markdown(
-        f"#### 🔹 월별 가스레인지 수 시계열 (YYYY.MM)  \n"
-        f"- 기간: **{start_label} ~ {end_label}**  \n"
-        f"- 기준연도: **{base_year}년**, 비교연도: **{comp_year}년**, 정점: **{peak_label}**"
-    )
-
-    # 정점 이전/이후로 나눠서 라인 색을 다르게 표시
-    pre_mask = month_series["date"] <= peak_date
-    post_mask = month_series["date"] >= peak_date
-
-    fig_month_ts = go.Figure()
-
-    # 정점 이전 구간
-    fig_month_ts.add_trace(
-        go.Scatter(
-            x=month_series.loc[pre_mask, "date"],
-            y=month_series.loc[pre_mask, COL_RANGE_CNT],
-            mode="lines",
-            name="정점 이전",
-        )
-    )
-
-    # 정점 이후 구간
-    fig_month_ts.add_trace(
-        go.Scatter(
-            x=month_series.loc[post_mask, "date"],
-            y=month_series.loc[post_mask, COL_RANGE_CNT],
-            mode="lines",
-            name="정점 이후",
-        )
-    )
-
-    # 전체에 마커 추가 (옵션적으로 좀 더 또렷하게)
-    fig_month_ts.add_trace(
-        go.Scatter(
-            x=month_series["date"],
-            y=month_series[COL_RANGE_CNT],
-            mode="markers",
-            name="월별 값",
-            marker=dict(size=4),
-            showlegend=False,
-        )
-    )
-
-    # 정점 월 수직선 + 영역 하이라이트 (후반부)
-    fig_month_ts.add_vline(x=peak_date, line_dash="dash", line_width=2)
-
-    # 정점 이후 영역 색칠 (살짝 강조)
-    fig_month_ts.add_vrect(
-        x0=peak_date,
-        x1=month_series["date"].iloc[-1],
-        fillcolor="LightSalmon",
-        opacity=0.15,
-        layer="below",
-        line_width=0,
-    )
-
-    # 정점 포인트 annotation (그래프 안, 위로 튀어나가지 않게)
-    fig_month_ts.add_annotation(
-        x=peak_date,
-        y=peak_val,
-        text=f"정점 {peak_label}",
-        showarrow=True,
-        arrowhead=2,
-        ax=0,
-        ay=-40,  # 위쪽으로 약간 띄우기
-    )
-
-    fig_month_ts.update_layout(
-        title="월별 가스레인지 수 추이 (정점 이후 구간 하이라이트)",
-        yaxis_title="가스레인지 수",
-        xaxis_title="기간 (YYYY.MM)",
-        hovermode="x unified",
-        margin=dict(l=40, r=20, t=80, b=40),
-        legend=dict(
-            orientation="h",
-            yanchor="bottom",
-            y=1.02,
-            xanchor="right",
-            x=1
-        ),
-    )
-    # x축 표시 형식 YYYY.MM
-    fig_month_ts.update_xaxes(tickformat="%Y.%m")
-
-    st.plotly_chart(fig_month_ts, use_container_width=True)
-
-    st.markdown("---")
-
-    # ── (B) 연도별 요약표 (월평균·연간합계) ─────────────────────
-    st.markdown("#### 🔹 연도별 가스레인지 수 요약 (월평균·연간합계 기준)")
-
-    # 연도×월별 집계 → 연도별 월평균/연간합계
+    # 연도×월별 집계 → 연도별 요약
     year_month = (
         df.groupby(["연도", COL_YEAR_MONTH], as_index=False)[COL_RANGE_CNT]
         .sum()
@@ -283,6 +191,11 @@ with tab1:
         .agg(연간합계="sum", 월평균="mean")
         .sort_values("연도")
     )
+
+    # 연간 정점 (연간합계 기준)
+    peak_idx_y = yearly["연간합계"].idxmax()
+    peak_year_y = int(yearly.loc[peak_idx_y, "연도"])
+    peak_val_y = float(yearly.loc[peak_idx_y, "연간합계"])
 
     # 전년 대비 (월평균 기준)
     yearly["전년대비 증감"] = yearly["월평균"].diff()
@@ -303,9 +216,165 @@ with tab1:
         yearly["기준연도 대비 증감"] = np.nan
         yearly["기준연도 대비 증감률(%)"] = np.nan
 
+    # ── (A) 활성화 버튼: 연간 / 월간 그래프 선택 ─────────────────────
+    st.markdown(
+        f"#### 🔹 가스레인지 수 추이 (연간 / 월간 활성화 선택)  \n"
+        f"- 월간 기간: **{start_label} ~ {end_label}**  \n"
+        f"- 연간 기준연도: **{base_year}년**, 비교연도: **{comp_year}년**, 연간 정점: **{peak_year_y}년**, 월간 정점: **{peak_label_m}**"
+    )
+
+    cb_col1, cb_col2 = st.columns(2)
+    with cb_col1:
+        show_year = st.checkbox("연간 추이 보기", value=False)
+    with cb_col2:
+        show_month = st.checkbox("월간 추이 보기 (YYYY.MM)", value=True)
+
+    # ── (A-1) 연간 그래프 ──
+    if show_year:
+        yearly_graph = yearly[["연도", "연간합계"]].copy()
+        pre_mask_y = yearly_graph["연도"] <= peak_year_y
+        post_mask_y = yearly_graph["연도"] >= peak_year_y
+
+        fig_year_ts = go.Figure()
+
+        fig_year_ts.add_trace(
+            go.Scatter(
+                x=yearly_graph.loc[pre_mask_y, "연도"],
+                y=yearly_graph.loc[pre_mask_y, "연간합계"],
+                mode="lines+markers",
+                name="정점 이전(연간)",
+            )
+        )
+
+        fig_year_ts.add_trace(
+            go.Scatter(
+                x=yearly_graph.loc[post_mask_y, "연도"],
+                y=yearly_graph.loc[post_mask_y, "연간합계"],
+                mode="lines+markers",
+                name="정점 이후(연간)",
+            )
+        )
+
+        fig_year_ts.add_vline(x=peak_year_y, line_dash="dash", line_width=2)
+
+        fig_year_ts.add_vrect(
+            x0=peak_year_y,
+            x1=yearly_graph["연도"].iloc[-1],
+            fillcolor="LightSalmon",
+            opacity=0.15,
+            layer="below",
+            line_width=0,
+        )
+
+        fig_year_ts.add_annotation(
+            x=peak_year_y,
+            y=peak_val_y,
+            text=f"연간 정점 {peak_year_y}",
+            showarrow=True,
+            arrowhead=2,
+            ax=0,
+            ay=-40,
+        )
+
+        fig_year_ts.update_layout(
+            title="연간 가스레인지 수 추이 (연간합계, 정점 이후 구간 하이라이트)",
+            yaxis_title="연간 가스레인지 수",
+            xaxis_title="연도",
+            hovermode="x unified",
+            margin=dict(l=40, r=20, t=80, b=40),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+        )
+
+        st.plotly_chart(fig_year_ts, use_container_width=True)
+
+    # ── (A-2) 월간 그래프 ──
+    if show_month:
+        pre_mask_m = month_series["date"] <= peak_date_m
+        post_mask_m = month_series["date"] >= peak_date_m
+
+        fig_month_ts = go.Figure()
+
+        fig_month_ts.add_trace(
+            go.Scatter(
+                x=month_series.loc[pre_mask_m, "date"],
+                y=month_series.loc[pre_mask_m, COL_RANGE_CNT],
+                mode="lines",
+                name="정점 이전(월간)",
+            )
+        )
+
+        fig_month_ts.add_trace(
+            go.Scatter(
+                x=month_series.loc[post_mask_m, "date"],
+                y=month_series.loc[post_mask_m, COL_RANGE_CNT],
+                mode="lines",
+                name="정점 이후(월간)",
+            )
+        )
+
+        fig_month_ts.add_trace(
+            go.Scatter(
+                x=month_series["date"],
+                y=month_series[COL_RANGE_CNT],
+                mode="markers",
+                name="월별 값",
+                marker=dict(size=4),
+                showlegend=False,
+            )
+        )
+
+        fig_month_ts.add_vline(x=peak_date_m, line_dash="dash", line_width=2)
+
+        fig_month_ts.add_vrect(
+            x0=peak_date_m,
+            x1=month_series["date"].iloc[-1],
+            fillcolor="LightSalmon",
+            opacity=0.15,
+            layer="below",
+            line_width=0,
+        )
+
+        fig_month_ts.add_annotation(
+            x=peak_date_m,
+            y=peak_val_m,
+            text=f"월간 정점 {peak_label_m}",
+            showarrow=True,
+            arrowhead=2,
+            ax=0,
+            ay=-40,
+        )
+
+        fig_month_ts.update_layout(
+            title="월별 가스레인지 수 추이 (정점 이후 구간 하이라이트)",
+            yaxis_title="가스레인지 수",
+            xaxis_title="기간 (YYYY.MM)",
+            hovermode="x unified",
+            margin=dict(l=40, r=20, t=80, b=40),
+            legend=dict(
+                orientation="h",
+                yanchor="bottom",
+                y=1.02,
+                xanchor="right",
+                x=1
+            ),
+        )
+        fig_month_ts.update_xaxes(tickformat="%Y.%m")
+
+        st.plotly_chart(fig_month_ts, use_container_width=True)
+
+    st.markdown("---")
+
+    # ── (B) 연도별 요약표 (월평균·연간합계) ─────────────────────
+    st.markdown("#### 🔹 연도별 가스레인지 수 요약 (월평균·연간합계 기준)")
+
     yearly_table = yearly.copy().set_index("연도")
 
-    # 숫자 포맷팅
     int_cols = ["연간합계", "월평균", "전년대비 증감", "기준연도 대비 증감"]
     rate_cols = ["전년대비 증감률(%)", "기준연도 대비 증감률(%)"]
 
@@ -378,7 +447,7 @@ with tab1:
     )
 
     heat_pivot = monthly_for_heat.pivot(index="월", columns="연도", values=COL_RANGE_CNT)
-    heat_pivot = heat_pivot.sort_index()  # 월 1~12 순서
+    heat_pivot = heat_pivot.sort_index()
 
     fig_heat = px.imshow(
         heat_pivot,
@@ -449,7 +518,6 @@ with tab2:
                 "GeoJSON 파일을 추가하고 `featureidkey`를 실제 속성명에 맞게 수정해줘."
             )
         else:
-            # featureidkey는 GeoJSON의 속성명에 맞게 수정 필요
             feature_key = "properties.SIG_KOR_NM"
 
             fig_map = px.choropleth(
