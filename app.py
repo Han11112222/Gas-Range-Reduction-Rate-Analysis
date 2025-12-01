@@ -1,4 +1,4 @@
-# app.py ─ Gas Range Reduction Rate Analysis (Daegu)
+# app.py ─ 가정용 가스레인지 감소 분석 (대구)
 # - 연도·용도·상품·시군구별 가스레인지 수 추이
 # - 기준연도 vs 비교연도 군구별 감소량 / 감소율 지도
 
@@ -15,21 +15,22 @@ import streamlit as st
 # 기본 설정
 # ─────────────────────────────────────────
 st.set_page_config(
-    page_title="가정용 가스레인지 감소 분석",
+    page_title="가정용 가스레인지 감소 분석 (대구)",
     layout="wide"
 )
 
 st.title("🏠 가정용 가스레인지 감소 분석 (대구)")
 
+# 파일 경로 (레포 구조에 맞게)
 DATA_PATH = Path(__file__).parent / "(ver2)가정용_가스레인지_사용유무.xlsx"
 GEO_PATH = Path(__file__).parent / "data" / "daegu_gu.geojson"
 
-# 엑셀의 실제 열 이름에 맞게 이 부분만 확인해서 수정하면 됨
-COL_YEAR_MONTH = "구분"
-COL_USAGE = "용도"
-COL_PRODUCT = "상품"
-COL_DISTRICT = "시군구"
-COL_RANGE_CNT = "가스레인지수"  # ← 엑셀 열 이름이 다르면 여기만 바꾸기
+# 엑셀 컬럼 이름 정의 (엑셀 헤더와 정확히 일치해야 함)
+COL_YEAR_MONTH = "구분"          # 예: 201501, 201502 …
+COL_USAGE = "용도"               # 예: 단독주택 / 공동주택
+COL_PRODUCT = "상품"             # 예: 취사용 / 취사난방용 / 개별난방용
+COL_DISTRICT = "시군구"          # 예: 중구 / 동구 / 서구 …
+COL_RANGE_CNT = "가스레인지수"    # 엑셀의 실제 열 이름에 맞게 필요시 수정
 
 
 # ─────────────────────────────────────────
@@ -37,21 +38,47 @@ COL_RANGE_CNT = "가스레인지수"  # ← 엑셀 열 이름이 다르면 여�
 # ─────────────────────────────────────────
 @st.cache_data
 def load_data() -> pd.DataFrame:
-    df = pd.read_excel(DATA_PATH, sheet_name=0)
+    # 1) 헤더 없이 전체를 읽어오기 (위에 기간 설명행 등 있어도 괜찮게)
+    raw = pd.read_excel(DATA_PATH, sheet_name=0, header=None)
 
-    # 연도 뽑기 (YYYYMM → YYYY)
+    # 2) 첫 번째 열에서 '구분' 이라는 글자가 있는 행을 찾아 헤더로 사용
+    first_col = raw.iloc[:, 0].astype(str).str.strip()
+    header_rows = first_col[first_col == COL_YEAR_MONTH].index.tolist()
+
+    if not header_rows:
+        st.error(
+            f"엑셀에서 '{COL_YEAR_MONTH}' 헤더 행을 찾지 못했다.\n"
+            "엑셀 파일에서 컬럼명이 정확히 맞는지 확인해줘."
+        )
+        st.stop()
+
+    header_idx = header_rows[0]
+
+    # 3) 해당 행을 컬럼명으로, 그 아래 행들을 실제 데이터로 사용
+    header = raw.iloc[header_idx].tolist()
+    df = raw.iloc[header_idx + 1:].copy()
+    df.columns = header
+
+    # 4) 완전히 빈 행 제거
+    df = df.dropna(how="all")
+
+    # 5) '구분' → 연도 추출 (YYYYMM → YYYY)
     df[COL_YEAR_MONTH] = df[COL_YEAR_MONTH].astype(str).str.strip()
     df["연도"] = df[COL_YEAR_MONTH].str[:4].astype(int)
 
-    # 가스레인지 수 숫자형 변환 (쉼표 제거 등)
+    # 6) 가스레인지 수 숫자형 변환 (쉼표 제거 포함)
     df[COL_RANGE_CNT] = (
         df[COL_RANGE_CNT]
         .astype(str)
         .str.replace(",", "", regex=False)
     )
-    df[COL_RANGE_CNT] = pd.to_numeric(df[COL_RANGE_CNT], errors="coerce").fillna(0).astype(int)
+    df[COL_RANGE_CNT] = (
+        pd.to_numeric(df[COL_RANGE_CNT], errors="coerce")
+        .fillna(0)
+        .astype(int)
+    )
 
-    # 공백 제거
+    # 7) 문자열 컬럼 공백 정리
     for c in [COL_USAGE, COL_PRODUCT, COL_DISTRICT]:
         df[c] = df[c].astype(str).str.strip()
 
@@ -121,6 +148,7 @@ st.sidebar.write(f"데이터 행 수: **{len(df):,}**")
 # 탭 구성
 # ─────────────────────────────────────────
 tab1, tab2 = st.tabs(["① 연도·상품·시군구 추이", "② 군구별 감소량 지도"])
+
 
 # ─────────────────────────────────────────
 # ① 연도·상품·시군구별 추이
@@ -213,7 +241,6 @@ with tab2:
         .fillna(0)
     )
 
-    # 컬럼명이 정수(연도)라서 바로 접근 가능
     if base_year not in pivot_map.columns:
         pivot_map[base_year] = 0
     if comp_year not in pivot_map.columns:
@@ -255,7 +282,8 @@ with tab2:
             )
         else:
             # featureidkey는 GeoJSON의 속성명에 맞게 수정 필요
-            feature_key = "properties.SIG_KOR_NM"  # 예시: SIG_KOR_NM 에 군구 이름이 들어있는 경우
+            # 예: properties.SIG_KOR_NM, properties.adm_nm 등
+            feature_key = "properties.SIG_KOR_NM"
 
             fig_map = px.choropleth(
                 map_table,
