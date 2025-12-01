@@ -1,7 +1,8 @@
 # app.py ─ 가정용 가스레인지 감소 분석 (대구)
-# - 연도·용도·상품·시군구별 가스레인지 수 추이
+# - 연도·용도·상품·시군구별 가스레인지 수 추이 (월평균 기준, 정점연도 하이라이트)
 # - 기준연도 vs 비교연도 군구별 감소량 / 감소율 지도
 # - 시군구별 연도별 추이 그래프
+# - 최근 10년 월별 패턴 분석 (라인 + 히트맵)
 
 from pathlib import Path
 import json
@@ -64,9 +65,10 @@ def load_data() -> pd.DataFrame:
     # 4) 완전히 빈 행 제거
     df = df.dropna(how="all")
 
-    # 5) '구분' → 연도 추출 (YYYYMM → YYYY)
+    # 5) '구분' → 연도 / 월 추출 (YYYYMM)
     df[COL_YEAR_MONTH] = df[COL_YEAR_MONTH].astype(str).str.strip()
     df["연도"] = df[COL_YEAR_MONTH].str[:4].astype(int)
+    df["월"] = df[COL_YEAR_MONTH].str[4:6].astype(int)
 
     # 6) 가스레인지 수 숫자형 변환 (쉼표 제거 포함)
     df[COL_RANGE_CNT] = (
@@ -158,54 +160,65 @@ tab1, tab2 = st.tabs(["① 연도·상품·시군구 추이", "② 군구별 감
 with tab1:
     st.subheader("① 연도·상품·시군구별 가스레인지 수 추이")
 
-    # 연도별 총합
-    yearly = (
-        df.groupby("연도", as_index=False)[COL_RANGE_CNT]
+    # ── 연도별 월평균/연간합계 계산 ──
+    # (연도×월 단위까지 합산한 뒤, 연도별 월평균/연간합계 산출)
+    year_month = (
+        df.groupby(["연도", COL_YEAR_MONTH], as_index=False)[COL_RANGE_CNT]
         .sum()
+    )
+
+    yearly = (
+        year_month
+        .groupby("연도", as_index=False)[COL_RANGE_CNT]
+        .agg(연간합계="sum", 월평균="mean")
         .sort_values("연도")
     )
 
-    # 전년 대비 증감 및 증감률
-    yearly["전년대비 증감"] = yearly[COL_RANGE_CNT].diff()
+    # 전년 대비 (월평균 기준)
+    yearly["전년대비 증감"] = yearly["월평균"].diff()
     yearly["전년대비 증감률(%)"] = (
-        yearly["전년대비 증감"] / yearly[COL_RANGE_CNT].shift(1) * 100
+        yearly["전년대비 증감"] / yearly["월평균"].shift(1) * 100
     ).round(1)
 
-    # 기준연도 대비 증감 / 증감률
+    # 기준연도 대비 (월평균 기준)
     if base_year in yearly["연도"].values:
         base_val = float(
-            yearly.loc[yearly["연도"] == base_year, COL_RANGE_CNT].iloc[0]
+            yearly.loc[yearly["연도"] == base_year, "월평균"].iloc[0]
         )
-        yearly["기준연도 대비 증감"] = yearly[COL_RANGE_CNT] - base_val
+        yearly["기준연도 대비 증감"] = yearly["월평균"] - base_val
         yearly["기준연도 대비 증감률(%)"] = (
-            (yearly[COL_RANGE_CNT] - base_val) / base_val * 100
+            (yearly["월평균"] - base_val) / base_val * 100
         ).round(1)
     else:
         yearly["기준연도 대비 증감"] = np.nan
         yearly["기준연도 대비 증감률(%)"] = np.nan
 
-    # 정점 연도(가스레인지 수 최대 연도) 계산
-    peak_idx = yearly[COL_RANGE_CNT].idxmax()
+    # 정점 연도 (월평균 기준)
+    peak_idx = yearly["월평균"].idxmax()
     peak_year = int(yearly.loc[peak_idx, "연도"])
-    peak_val = float(yearly.loc[peak_idx, COL_RANGE_CNT])
+    peak_val = float(yearly.loc[peak_idx, "월평균"])
 
-    st.markdown("#### 🔹 연도별 가스레인지 수 추이 (상단: 동적 차트, 하단: 숫자표)")
+    st.markdown(
+        f"#### 🔹 연도별 가스레인지 수 추이  \n"
+        f"- y축: **연도별 월평균 가스레인지 수**  \n"
+        f"- 기준연도: **{base_year}년**, 비교연도: **{comp_year}년**, 정점연도: **{peak_year}년**"
+    )
 
-    # ── (1) 연도별 전체 추이 그래프 (정점 연도 강조) ──
+    # ── (1) 연도별 월평균 추이 그래프 (정점 연도 하이라이트) ──
     fig_year = go.Figure()
 
     # 기본 라인 + 에어리어
     fig_year.add_trace(
         go.Scatter(
             x=yearly["연도"],
-            y=yearly[COL_RANGE_CNT],
+            y=yearly["월평균"],
             mode="lines+markers",
-            name="총 가스레인지 수",
+            name="월평균 가스레인지 수",
             fill="tozeroy",
         )
     )
 
-    # 기준연도 / 비교연도 / 정점연도 수직선 (텍스트는 annotation으로 별도)
+    # 기준/비교/정점 수직선
     fig_year.add_vline(x=base_year, line_dash="dot", line_width=2)
     fig_year.add_vline(x=comp_year, line_dash="dot", line_width=2)
     fig_year.add_vline(x=peak_year, line_dash="dash", line_width=2)
@@ -223,35 +236,19 @@ with tab1:
         )
     )
 
-    # 수직선에 대한 텍스트 라벨(annotation)
-    ymax = float(yearly[COL_RANGE_CNT].max())
-    y_text = ymax * 1.02  # 그래프 위 여백 부분
-
-    fig_year.add_annotation(
-        x=base_year,
-        y=y_text,
-        text=f"기준연도 {base_year}",
-        showarrow=False,
-        yanchor="bottom"
-    )
-    fig_year.add_annotation(
-        x=comp_year,
-        y=y_text,
-        text=f"비교연도 {comp_year}",
-        showarrow=False,
-        yanchor="bottom"
-    )
+    # 정점 라벨만 annotation으로 (기준/비교는 텍스트 설명으로 처리)
+    ymax = float(yearly["월평균"].max())
     fig_year.add_annotation(
         x=peak_year,
-        y=y_text,
+        y=ymax * 1.02,
         text=f"정점연도 {peak_year}",
         showarrow=False,
         yanchor="bottom"
     )
 
     fig_year.update_layout(
-        title="연도별 가스레인지 수 추이 (정점 연도 하이라이트)",
-        yaxis_title="가스레인지 수",
+        title="연도별 월평균 가스레인지 수 추이 (정점 연도 하이라이트)",
+        yaxis_title="월평균 가스레인지 수",
         xaxis_title="연도",
         hovermode="x unified",
         margin=dict(l=40, r=20, t=80, b=40),
@@ -267,17 +264,18 @@ with tab1:
     st.plotly_chart(fig_year, use_container_width=True)
 
     # ── (2) 연도별 숫자표 (그래프 하단) ──
-    st.markdown("##### 📊 연도별 가스레인지 수 요약표")
+    st.markdown("##### 📊 연도별 가스레인지 수 요약표 (월평균·연간합계 기준)")
+    yearly_table = yearly.set_index("연도")
     st.dataframe(
-        yearly.set_index("연도"),
+        yearly_table,
         use_container_width=True,
-        height=320
+        height=350
     )
 
     st.markdown("---")
 
     # ── (3) 시군구별 연도별 추이 그래프 ──
-    st.markdown("#### 🔹 시군구별 가스레인지 수 연도 추세")
+    st.markdown("#### 🔹 시군구별 가스레인지 수 연도 추세 (연간합계 기준)")
 
     gu_year = (
         df.groupby(["연도", COL_DISTRICT], as_index=False)[COL_RANGE_CNT]
@@ -294,10 +292,10 @@ with tab1:
             y=COL_RANGE_CNT,
             color=COL_DISTRICT,
             markers=True,
-            title="시군구별 연도별 가스레인지 수 추이",
+            title="시군구별 연도별 가스레인지 수 추이 (연간합계)",
         )
         fig_gu.update_layout(
-            yaxis_title="가스레인지 수",
+            yaxis_title="연간 가스레인지 수",
             xaxis_title="연도",
             hovermode="x unified",
             legend=dict(
@@ -330,6 +328,55 @@ with tab1:
         height=400
     )
 
+    st.markdown("---")
+
+    # ── (5) 월별 패턴 분석 (추천 그래프) ──
+    st.markdown(
+        "#### 🔹 월별 패턴 분석 (최근 10년)  \n"
+        "- **월별 평균 라인 차트**로 계절성을 보고,  \n"
+        "- **연도 × 월 히트맵**으로 연도별 패턴·변곡을 함께 보는 구성이 가장 직관적이라서 같이 넣었어."
+    )
+
+    # 월 단위 집계 (연도 무시)
+    monthly = (
+        df.groupby(["연도", "월"], as_index=False)[COL_RANGE_CNT]
+        .sum()
+    )
+
+    # (5-1) 월별 평균 패턴 (10년 평균)
+    month_avg = (
+        monthly.groupby("월", as_index=False)[COL_RANGE_CNT]
+        .mean()
+    )
+
+    fig_month = px.line(
+        month_avg,
+        x="월",
+        y=COL_RANGE_CNT,
+        markers=True,
+        title="월별 평균 가스레인지 수 (최근 10년 평균)",
+    )
+    fig_month.update_layout(
+        xaxis=dict(dtick=1),
+        yaxis_title="월별 평균 가스레인지 수",
+        hovermode="x unified",
+        margin=dict(l=40, r=20, t=60, b=40),
+    )
+    st.plotly_chart(fig_month, use_container_width=True)
+
+    # (5-2) 연도 × 월 히트맵
+    heat_pivot = monthly.pivot(index="월", columns="연도", values=COL_RANGE_CNT)
+    heat_pivot = heat_pivot.sort_index()  # 월 1~12 순서대로
+
+    fig_heat = px.imshow(
+        heat_pivot,
+        labels=dict(x="연도", y="월", color="가스레인지 수"),
+        aspect="auto",
+        title="연도 × 월 가스레인지 수 히트맵 (패턴 분석용)",
+    )
+    fig_heat.update_xaxes(side="top")
+    st.plotly_chart(fig_heat, use_container_width=True)
+
 
 # ─────────────────────────────────────────
 # ② 군구별 감소량 지도
@@ -337,7 +384,7 @@ with tab1:
 with tab2:
     st.subheader("② 기준연도 대비 군구별 가스레인지 감소량 지도")
 
-    # 기준연도 & 비교연도만 추출
+    # 기준연도 & 비교연도만 추출 (연간합계 기준)
     map_df = df[df["연도"].isin([base_year, comp_year])]
 
     grouped = (
@@ -365,8 +412,8 @@ with tab2:
 
     map_table = pivot_map.reset_index().rename(
         columns={
-            base_year: f"{base_year}년 가스레인지 수",
-            comp_year: f"{comp_year}년 가스레인지 수",
+            base_year: f"{base_year}년 가스레인지 수(연간합계)",
+            comp_year: f"{comp_year}년 가스레인지 수(연간합계)",
         }
     )
 
@@ -374,7 +421,7 @@ with tab2:
 
     with c1:
         st.markdown(
-            f"**군구별 가스레인지 수 및 감소량**  \n"
+            f"**군구별 가스레인지 수 및 감소량 (연간합계 기준)**  \n"
             f"(기준연도: {base_year}년, 비교연도: {comp_year}년)"
         )
         st.dataframe(
@@ -402,12 +449,12 @@ with tab2:
                 color="감소량(기준-비교)",
                 hover_name=COL_DISTRICT,
                 hover_data={
-                    f"{base_year}년 가스레인지 수": ":,",
-                    f"{comp_year}년 가스레인지 수": ":,",
+                    f"{base_year}년 가스레인지 수(연간합계)": ":,",
+                    f"{comp_year}년 가스레인지 수(연간합계)": ":,",
                     "감소량(기준-비교)": ":,",
                     "감소율(%)": True,
                 },
-                title=f"{base_year}년 → {comp_year}년 군구별 가스레인지 감소량",
+                title=f"{base_year}년 → {comp_year}년 군구별 가스레인지 감소량 (연간합계 기준)",
             )
             fig_map.update_geos(fitbounds="locations", visible=False)
             fig_map.update_layout(
@@ -418,7 +465,7 @@ with tab2:
 
     st.markdown(
         """
-        - **감소량(기준-비교)** : 기준연도 가스레인지 수 − 비교연도 가스레인지 수  
-        - **감소율(%)** : 감소량 ÷ 기준연도 가스레인지 수 × 100
+        - **감소량(기준-비교)** : 기준연도 연간 가스레인지 수 − 비교연도 연간 가스레인지 수  
+        - **감소율(%)** : 감소량 ÷ 기준연도 연간 가스레인지 수 × 100
         """
     )
