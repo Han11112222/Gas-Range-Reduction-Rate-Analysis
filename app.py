@@ -184,18 +184,28 @@ with tab1:
         yearly["기준연도 대비 증감"] = np.nan
         yearly["기준연도 대비 증감률(%)"] = np.nan
 
-    # ── (1) 연도별 전체 추이 그래프 ──
+    # 정점 연도(가스레인지 수 최대 연도) 계산
+    peak_idx = yearly[COL_RANGE_CNT].idxmax()
+    peak_year = int(yearly.loc[peak_idx, "연도"])
+    peak_val = float(yearly.loc[peak_idx, COL_RANGE_CNT])
+
     st.markdown("#### 🔹 연도별 가스레인지 수 추이 (상단: 동적 차트, 하단: 숫자표)")
 
-    fig_year = px.line(
-        yearly,
-        x="연도",
-        y=COL_RANGE_CNT,
-        markers=True,
-        title="연도별 가스레인지 수 추이",
+    # ── (1) 연도별 전체 추이 그래프 (정점 연도 강조) ──
+    fig_year = go.Figure()
+
+    # 기본 라인 + 에어리어
+    fig_year.add_trace(
+        go.Scatter(
+            x=yearly["연도"],
+            y=yearly[COL_RANGE_CNT],
+            mode="lines+markers",
+            name="총 가스레인지 수",
+            fill="tozeroy",
+        )
     )
 
-    # 기준연도 / 비교연도 강조선
+    # 기준연도 수직선
     fig_year.add_vline(
         x=base_year,
         line_dash="dot",
@@ -203,33 +213,50 @@ with tab1:
         annotation_text=f"기준연도 {base_year}",
         annotation_position="top left",
     )
+
+    # 비교연도 수직선
     fig_year.add_vline(
         x=comp_year,
         line_dash="dot",
         line_width=2,
-        line_color="gray",
         annotation_text=f"비교연도 {comp_year}",
         annotation_position="top right",
     )
 
-    fig_year.update_traces(mode="lines+markers")
+    # 정점 연도 수직선 + 포인트 강조
+    fig_year.add_vline(
+        x=peak_year,
+        line_dash="dash",
+        line_width=2,
+        annotation_text=f"정점연도 {peak_year}",
+        annotation_position="top center",
+    )
+
+    fig_year.add_trace(
+        go.Scatter(
+            x=[peak_year],
+            y=[peak_val],
+            mode="markers+text",
+            text=[f"정점 {peak_year}"],
+            textposition="top center",
+            marker=dict(size=12),
+            showlegend=False,
+        )
+    )
+
     fig_year.update_layout(
+        title="연도별 가스레인지 수 추이 (정점 연도 하이라이트)",
         yaxis_title="가스레인지 수",
         xaxis_title="연도",
         hovermode="x unified",
-        xaxis=dict(
-            type="linear",
-            rangeselector=dict(
-                buttons=list([
-                    dict(count=3, label="최근 3년", step="year", stepmode="backward"),
-                    dict(count=5, label="최근 5년", step="year", stepmode="backward"),
-                    dict(step="all", label="전체")
-                ])
-            ),
-            rangeslider=dict(visible=True)
-        ),
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         margin=dict(l=40, r=20, t=60, b=40),
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
     )
 
     st.plotly_chart(fig_year, use_container_width=True)
@@ -269,10 +296,6 @@ with tab1:
             yaxis_title="가스레인지 수",
             xaxis_title="연도",
             hovermode="x unified",
-            xaxis=dict(
-                type="linear",
-                rangeslider=dict(visible=False)
-            ),
             legend=dict(
                 title="시군구",
                 orientation="h",
@@ -285,7 +308,7 @@ with tab1:
         )
         st.plotly_chart(fig_gu, use_container_width=True)
 
-    # ── (4) 세부 피벗 테이블 (옵션용) ──
+    # ── (4) 세부 피벗 테이블 ──
     st.markdown("##### 📑 세부 피벗테이블 (연도 × 용도 × 상품 × 시군구)")
     pivot = (
         df.pivot_table(
@@ -380,12 +403,11 @@ with tab2:
                     "감소량(기준-비교)": ":,",
                     "감소율(%)": True,
                 },
-                color_continuous_scale="Blues",
                 title=f"{base_year}년 → {comp_year}년 군구별 가스레인지 감소량",
             )
             fig_map.update_geos(fitbounds="locations", visible=False)
             fig_map.update_layout(
-                margin={"r": 0, "t": 40, "l": 0, "b": 0},
+                margin=dict(l=0, r=0, t=40, b=0),
                 coloraxis_colorbar=dict(title="감소량")
             )
             st.plotly_chart(fig_map, use_container_width=True)
