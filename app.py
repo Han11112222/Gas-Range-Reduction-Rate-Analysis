@@ -1,6 +1,6 @@
 # app.py ─ 가정용 가스레인지 감소 분석 (대구 + 경산)
 # - ① 월별·연도별 추이 (연간/월간, 정점 이후 하이라이트)
-# - ② 대구시 구·군 + 경산시 군구별 감소량 지도 + 비교표
+# - ② 대구시 구·군 + 경산시 시군구별 감소량 지도 + 비교표
 
 from pathlib import Path
 import json
@@ -87,18 +87,10 @@ def load_data() -> pd.DataFrame:
 
 @st.cache_data
 def load_geojson():
-    """대구+경산 시군구 GeoJSON 로딩 (필드: 시군구)"""
+    """대구+경산 시군구 GeoJSON 로딩"""
     try:
         with open(GEO_PATH, encoding="utf-8") as f:
-            gj = json.load(f)
-
-        # GeoJSON 속성값도 strip (ID 매칭 오류 방지)
-        for feat in gj.get("features", []):
-            props = feat.get("properties", {})
-            if "시군구" in props:
-                props["시군구"] = str(props["시군구"]).strip()
-
-        return gj
+            return json.load(f)
     except FileNotFoundError:
         return None
 
@@ -463,6 +455,7 @@ with tab1:
         fig_heat.update_xaxes(side="top")
         st.plotly_chart(fig_heat, use_container_width=True)
 
+
 # ─────────────────────────────────────
 # ② 군구별 감소량 지도 (대구 전 구·군 + 경산시)
 # ─────────────────────────────────────
@@ -513,9 +506,6 @@ with tab2:
             }
         )
 
-        # 시군구 문자열 정리 (GeoJSON과 ID 매칭)
-        map_table["시군구"] = map_table["시군구"].astype(str).str.strip()
-
         c1, c2 = st.columns([2, 3])
 
         # 표
@@ -552,14 +542,19 @@ with tab2:
                     "daegu_gyeongsan_sgg.geojson 파일이 data 폴더에 있는지 확인해줘."
                 )
             else:
-                # 색상 범위: 감소량 절대값 기준으로 ±최대값
-                max_abs = float(np.nanmax(np.abs(map_table["감소량(기준-비교)"])))
+                # 색상 범위를 0 기준으로 대칭 설정 (감소 많을수록 진한 파란색)
+                vmin = map_table["감소량(기준-비교)"].min()
+                vmax = map_table["감소량(기준-비교)"].max()
+                vmax_abs = max(abs(vmin), abs(vmax))
+
                 fig_map = px.choropleth(
                     map_table,
                     geojson=geojson,
-                    locations="시군구",                 # DataFrame 키
-                    featureidkey="properties.시군구",    # GeoJSON 속성 키 (시군구 이름)
+                    locations="시군구",                   # DataFrame 키
+                    featureidkey="properties.ADZONE_NM",  # GeoJSON 속성 키 (★중요★)
                     color="감소량(기준-비교)",
+                    color_continuous_scale="RdBu_r",
+                    range_color=[-vmax_abs, vmax_abs],
                     hover_name="시군구",
                     hover_data={
                         f"{base_year}년 가스레인지 수(연간합계)": ":,",
@@ -568,8 +563,6 @@ with tab2:
                         "감소율(%)": True,
                     },
                     title=f"{base_year}년 → {comp_year}년 대구시 구·군 + 경산시 시군구별 가스레인지 감소량",
-                    color_continuous_scale="RdBu_r",
-                    range_color=(-max_abs, max_abs),
                 )
                 fig_map.update_geos(fitbounds="locations", visible=False)
                 fig_map.update_layout(
@@ -582,6 +575,6 @@ with tab2:
             """
             - **감소량(기준-비교)** : 기준연도 연간 가스레인지 수 − 비교연도 연간 가스레인지 수  
             - **감소율(%)** : 감소량 ÷ 기준연도 연간 가스레인지 수 × 100  
-            - 시군구 선택 필터와 무관하게, 대구 8개 구·군 + 경산시만 지도/표에 표시됨.
+            - 시군구 선택 필터와 무관하게, 지도는 대구 8개 구·군 + 경산시 9개만 표시돼.
             """
         )
