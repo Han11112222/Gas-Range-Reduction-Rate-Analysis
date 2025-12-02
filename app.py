@@ -1,6 +1,6 @@
 # app.py ─ 가정용 가스레인지 감소 분석 (대구 + 경산)
-# - ① 월별·연도별 추이 (연간/월간, 정점 이후 하이라이트)
-# - ② 대구시 구·군 + 경산시 군구별 감소량 지도 + 비교표
+# ① 월별·연도별 추이
+# ② 대구시 구·군 + 경산시 시군구별 감소량 지도
 
 from pathlib import Path
 import json
@@ -20,18 +20,19 @@ st.set_page_config(
 )
 st.title("🏠 가정용 가스레인지 감소 분석 (대구)")
 
-# 데이터/지도 경로
-DATA_PATH = Path(__file__).parent / "(ver2)가정용_가스레인지_사용유무.xlsx"
-GEO_PATH = Path(__file__).parent / "data" / "daegu_gyeongsan_sgg.geojson"
+# 파일 경로
+BASE_DIR = Path(__file__).parent
+DATA_PATH = BASE_DIR / "(ver2)가정용_가스레인지_사용유무.xlsx"
+GEO_PATH = BASE_DIR / "data" / "daegu_gyeongsan_sgg.geojson"
 
 # 엑셀 컬럼 이름
-COL_YEAR_MONTH = "구분"        # 201501, 201502 …
-COL_USAGE = "용도"             # 단독주택 / 공동주택
-COL_PRODUCT = "상품"           # 취사용 / 취사난방용 / 개별난방용
-COL_DISTRICT = "시군구"        # 중구 / 동구 / 경산시 …
-COL_RANGE_CNT = "가스레인지수"   # 엑셀에 맞게 필요하면 수정
+COL_YEAR_MONTH = "구분"          # 201501, 201502 …
+COL_USAGE = "용도"               # 단독주택 / 공동주택
+COL_PRODUCT = "상품"             # 취사용 / 취사난방용 / 개별난방용
+COL_DISTRICT = "시군구"          # 중구 / 동구 / 경산시 …
+COL_RANGE_CNT = "가스레인지수"     # 개수
 
-# 대구 + 경산 시군구 목록 (표/지도 정렬 기준)
+# 대구 + 경산 시군구 표시 순서
 TARGET_SIGUNGU = [
     "중구", "동구", "서구", "남구", "북구",
     "수성구", "달서구", "달성군",
@@ -39,22 +40,20 @@ TARGET_SIGUNGU = [
 ]
 
 # ─────────────────────────────────────
-# 데이터 로딩
+# 데이터 / 지도 로딩
 # ─────────────────────────────────────
 @st.cache_data
 def load_data() -> pd.DataFrame:
-    """엑셀 원시파일에서 분석용 데이터프레임 생성"""
     raw = pd.read_excel(DATA_PATH, sheet_name=0, header=None)
 
-    # 첫 열에서 '구분'이 있는 행을 찾아 헤더로 사용
+    # '구분' 행 찾기
     first_col = raw.iloc[:, 0].astype(str).str.strip()
     header_rows = first_col[first_col == COL_YEAR_MONTH].index.tolist()
     if not header_rows:
-        st.error(f"엑셀에서 '{COL_YEAR_MONTH}' 헤더 행을 찾지 못했어. 엑셀 컬럼명을 한 번 확인해줘.")
+        st.error("'구분' 헤더 행을 엑셀에서 찾지 못했어.")
         st.stop()
     header_idx = header_rows[0]
 
-    # 헤더/데이터 분리
     header = raw.iloc[header_idx].tolist()
     df = raw.iloc[header_idx + 1:].copy()
     df.columns = header
@@ -71,13 +70,9 @@ def load_data() -> pd.DataFrame:
         .astype(str)
         .str.replace(",", "", regex=False)
     )
-    df[COL_RANGE_CNT] = (
-        pd.to_numeric(df[COL_RANGE_CNT], errors="coerce")
-        .fillna(0)
-        .astype(int)
-    )
+    df[COL_RANGE_CNT] = pd.to_numeric(df[COL_RANGE_CNT], errors="coerce").fillna(0).astype(int)
 
-    # 문자열 컬럼 정리
+    # 문자열 컬럼 공백 제거
     for c in [COL_USAGE, COL_PRODUCT, COL_DISTRICT]:
         df[c] = df[c].astype(str).str.strip()
 
@@ -85,37 +80,22 @@ def load_data() -> pd.DataFrame:
 
 
 @st.cache_data
-def load_geojson_and_key():
-    """
-    대구+경산 시군구 GeoJSON 로딩 + 시군구 필드 이름 자동 탐지
-    - 우선순위: '시군구' > 'ADZONE_NM' > 그 외 첫 번째 필드
-    """
+def load_geojson():
     try:
         with open(GEO_PATH, encoding="utf-8") as f:
             gj = json.load(f)
+        # 속성값도 strip 해 두자 (혹시 모를 공백 대비)
+        for feat in gj.get("features", []):
+            props = feat.get("properties", {})
+            if "ADZONE_NM" in props:
+                props["ADZONE_NM"] = str(props["ADZONE_NM"]).strip()
+        return gj
     except FileNotFoundError:
-        return None, None
-
-    # 첫 feature의 properties를 보고 필드 이름 찾기
-    features = gj.get("features", [])
-    if not features:
-        return gj, None
-
-    props = features[0].get("properties", {})
-    field_name = None
-    if "시군구" in props:
-        field_name = "시군구"
-    elif "ADZONE_NM" in props:
-        field_name = "ADZONE_NM"
-    elif props:
-        # 어쨌든 뭔가 하나는 쓰자 (디버깅용)
-        field_name = list(props.keys())[0]
-
-    return gj, field_name
+        return None
 
 
 df_raw = load_data()
-geojson, geo_sig_field = load_geojson_and_key()
+geojson = load_geojson()
 
 years = sorted(df_raw["연도"].unique())
 usage_list = sorted(df_raw[COL_USAGE].unique())
@@ -130,37 +110,37 @@ st.sidebar.header("⚙️ 분석 조건")
 base_year, comp_year = st.sidebar.select_slider(
     "기준연도 / 비교연도",
     options=years,
-    value=(years[0], years[-1])
+    value=(years[0], years[-1]),
 )
 
 usage_sel = st.sidebar.multiselect(
     "용도 선택 (복수 선택 가능)",
     options=usage_list,
-    default=usage_list
+    default=usage_list,
 )
 product_sel = st.sidebar.multiselect(
     "상품 선택 (복수 선택 가능)",
     options=product_list,
-    default=product_list
+    default=product_list,
 )
 district_sel = st.sidebar.multiselect(
     "시군구 선택 (복수 선택 가능, 비우면 전체)",
     options=district_list,
-    default=district_list
+    default=district_list,
 )
 
 # 필터 적용
 df = df_raw.copy()
 df = df[df[COL_USAGE].isin(usage_sel)]
 df = df[df[COL_PRODUCT].isin(product_sel)]
-if len(district_sel) > 0:
+if district_sel:
     df = df[df[COL_DISTRICT].isin(district_sel)]
 
 st.sidebar.markdown("---")
 st.sidebar.write(f"데이터 행 수: **{len(df):,}**")
 
 # ─────────────────────────────────────
-# 탭 구성
+# 탭
 # ─────────────────────────────────────
 tab1, tab2 = st.tabs(["① 월별·연도별 추이", "② 군구별 감소량 지도"])
 
@@ -190,7 +170,7 @@ with tab1:
         start_label = month_series["date"].iloc[0].strftime("%Y.%m")
         end_label = month_series["date"].iloc[-1].strftime("%Y.%m")
 
-        # 연도별 요약 (연간합계, 월평균)
+        # 연도별 요약
         year_month = (
             df.groupby(["연도", COL_YEAR_MONTH], as_index=False)[COL_RANGE_CNT]
             .sum()
@@ -210,13 +190,13 @@ with tab1:
         last_val_y = float(yearly["연간합계"].iloc[-1])
         decline_pct_y = (last_val_y / peak_val_y - 1.0) * 100
 
-        # 전년 대비 (월평균 기준)
+        # 전년 대비 (월평균)
         yearly["전년대비 증감"] = yearly["월평균"].diff()
         yearly["전년대비 증감률(%)"] = (
             yearly["전년대비 증감"] / yearly["월평균"].shift(1) * 100
         ).round(1)
 
-        # 기준연도 대비 (월평균 기준)
+        # 기준연도 대비 (월평균)
         if base_year in yearly["연도"].values:
             base_val = float(
                 yearly.loc[yearly["연도"] == base_year, "월평균"].iloc[0]
@@ -244,13 +224,12 @@ with tab1:
 
         show_month = st.checkbox("월간 추이 함께 보기 (YYYY.MM)", value=False)
 
-        # ─ 연간 그래프 ─
+        # 연간 그래프
         yearly_graph = yearly[["연도", "연간합계"]].copy()
         pre_mask_y = yearly_graph["연도"] <= peak_year_y
         post_mask_y = yearly_graph["연도"] >= peak_year_y
 
         fig_year_ts = go.Figure()
-
         fig_year_ts.add_trace(
             go.Scatter(
                 x=yearly_graph.loc[pre_mask_y, "연도"],
@@ -271,7 +250,6 @@ with tab1:
                 marker=dict(size=7),
             )
         )
-
         fig_year_ts.add_vline(x=peak_year_y, line_dash="dash", line_width=2)
         fig_year_ts.add_vrect(
             x0=peak_year_y,
@@ -299,7 +277,6 @@ with tab1:
             ax=40,
             ay=40,
         )
-
         fig_year_ts.update_layout(
             title="연간 가스레인지 수 추이 (연간합계, 정점 이후 구간 하이라이트)",
             yaxis_title="연간 가스레인지 수",
@@ -307,16 +284,13 @@ with tab1:
             hovermode="x unified",
             margin=dict(l=40, r=20, t=80, b=40),
             legend=dict(
-                orientation="h",
-                yanchor="bottom",
-                y=1.02,
-                xanchor="right",
-                x=1
+                orientation="h", yanchor="bottom", y=1.02,
+                xanchor="right", x=1
             ),
         )
         st.plotly_chart(fig_year_ts, use_container_width=True)
 
-        # ─ 월간 그래프 (옵션) ─
+        # 월간 그래프 (옵션)
         if show_month:
             pre_mask_m = month_series["date"] <= peak_date_m
             post_mask_m = month_series["date"] >= peak_date_m
@@ -377,7 +351,6 @@ with tab1:
                 ax=40,
                 ay=40,
             )
-
             fig_month_ts.update_layout(
                 title="월별 가스레인지 수 추이 (정점 이후 구간 하이라이트)",
                 yaxis_title="가스레인지 수",
@@ -385,23 +358,18 @@ with tab1:
                 hovermode="x unified",
                 margin=dict(l=40, r=20, t=80, b=40),
                 legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1
+                    orientation="h", yanchor="bottom", y=1.02,
+                    xanchor="right", x=1
                 ),
             )
             fig_month_ts.update_xaxes(tickformat="%Y.%m")
-
             st.plotly_chart(fig_month_ts, use_container_width=True)
 
         st.markdown("---")
 
-        # 연도별 요약표
+        # 연도별 요약표 (표시는 보기 좋게 포맷만 따로)
         st.markdown("#### 🔹 연도별 가스레인지 수 요약 (월평균·연간합계 기준)")
         yearly_table = yearly.copy().set_index("연도")
-
         int_cols = ["연간합계", "월평균", "전년대비 증감", "기준연도 대비 증감"]
         rate_cols = ["전년대비 증감률(%)", "기준연도 대비 증감률(%)"]
 
@@ -415,7 +383,6 @@ with tab1:
                 yearly_table[c] = yearly_table[c].apply(
                     lambda x: "" if pd.isna(x) else f"{x:,.1f}"
                 )
-
         st.dataframe(yearly_table, use_container_width=True, height=350)
 
         st.markdown("---")
@@ -475,18 +442,18 @@ with tab1:
         st.plotly_chart(fig_heat, use_container_width=True)
 
 # ─────────────────────────────────────
-# ② 군구별 감소량 지도 (대구 전 구·군 + 경산시)
+# ② 군구별 감소량 지도
 # ─────────────────────────────────────
 with tab2:
     st.subheader("② 기준연도 대비 군구별 가스레인지 감소량 지도 (대구 + 경산)")
 
-    # usage / product 필터 적용 + 대구+경산 시군구만 사용
+    # 지도용 데이터: 시군구 필터는 TARGET_SIGUNGU로 고정
     df_map = df_raw.copy()
     df_map = df_map[df_map[COL_USAGE].isin(usage_sel)]
     df_map = df_map[df_map[COL_PRODUCT].isin(product_sel)]
     df_map = df_map[df_map[COL_DISTRICT].isin(TARGET_SIGUNGU)]
 
-    map_df = df_map[df_map["연도"].isin([base_year, comp_year])]
+    map_df = df_map[df_map["연도"].isin([base_year, comp_year])].copy()
 
     if map_df.empty:
         st.info("현재 필터 조건에 해당하는 대구+경산 시군구 데이터가 없어.")
@@ -496,86 +463,81 @@ with tab2:
             .sum()
         )
 
-        pivot_map = (
-            grouped
-            .pivot(index=COL_DISTRICT, columns="연도", values=COL_RANGE_CNT)
-            .reindex(index=TARGET_SIGUNGU)
-            .fillna(0)
-        )
+        # 피벗: index=시군구, columns=연도
+        pivot_map = grouped.pivot(index=COL_DISTRICT, columns="연도", values=COL_RANGE_CNT)
+        pivot_map = pivot_map.reindex(index=TARGET_SIGUNGU)
 
+        # 기준/비교 연도 값 보정
         if base_year not in pivot_map.columns:
             pivot_map[base_year] = 0
         if comp_year not in pivot_map.columns:
             pivot_map[comp_year] = 0
 
-        pivot_map["감소량(기준-비교)"] = pivot_map[base_year] - pivot_map[comp_year]
-        pivot_map["감소율(%)"] = np.where(
-            pivot_map[base_year] > 0,
-            pivot_map["감소량(기준-비교)"] / pivot_map[base_year] * 100,
+        base_col = f"{base_year}년 가스레인지 수(연간합계)"
+        comp_col = f"{comp_year}년 가스레인지 수(연간합계)"
+
+        map_table = pivot_map[[base_year, comp_year]].copy()
+        map_table.columns = [base_col, comp_col]
+        map_table.reset_index(inplace=True)
+        map_table.rename(columns={COL_DISTRICT: "시군구"}, inplace=True)
+
+        # 감소량 / 감소율
+        map_table["감소량(기준-비교)"] = map_table[base_col] - map_table[comp_col]
+        map_table["감소율(%)"] = np.where(
+            map_table[base_col] > 0,
+            map_table["감소량(기준-비교)"] / map_table[base_col] * 100,
             np.nan,
         )
-        pivot_map["감소율(%)"] = pivot_map["감소율(%)"].round(1)
+        map_table["감소율(%)"] = map_table["감소율(%)"].round(1)
 
-        map_table = pivot_map.reset_index().rename(
-            columns={
-                COL_DISTRICT: "시군구",
-                base_year: f"{base_year}년 가스레인지 수(연간합계)",
-                comp_year: f"{comp_year}년 가스레인지 수(연간합계)",
-            }
-        )
-
+        # 표용 포맷
         c1, c2 = st.columns([2, 3])
 
-        # 표
         with c1:
             st.markdown(
                 f"**대구시 구·군 + 경산시 시군구별 가스레인지 수 및 변화 (연간합계 기준)**  \n"
                 f"(기준연도: {base_year}년, 비교연도: {comp_year}년)"
             )
             df_show = map_table.copy()
-
-            int_cols = [
-                f"{base_year}년 가스레인지 수(연간합계)",
-                f"{comp_year}년 가스레인지 수(연간합계)",
-                "감소량(기준-비교)",
-            ]
-            for col in int_cols:
+            for col in [base_col, comp_col, "감소량(기준-비교)"]:
                 df_show[col] = df_show[col].apply(lambda x: f"{int(x):,}")
-
             df_show["감소율(%)"] = df_show["감소율(%)"].apply(
                 lambda x: "" if pd.isna(x) else f"{x:.1f}"
             )
-
             st.dataframe(
                 df_show.set_index("시군구"),
                 use_container_width=True,
                 height=450,
             )
 
-        # 지도
         with c2:
-            if geojson is None or geo_sig_field is None:
+            if geojson is None:
                 st.warning(
-                    f"대구+경산 GeoJSON({GEO_PATH})을 읽을 수 없거나, 시군구 필드를 찾지 못했어.  "
-                    "GeoJSON 파일과 필드명을 다시 확인해줘."
+                    f"GeoJSON 파일({GEO_PATH.name})을 찾을 수 없어서 지도를 그릴 수 없어."
                 )
             else:
+                # 시군구 이름 공백 제거
+                map_table["시군구"] = map_table["시군구"].astype(str).str.strip()
+
                 fig_map = px.choropleth(
                     map_table,
                     geojson=geojson,
-                    locations="시군구",                       # DataFrame 키
-                    featureidkey=f"properties.{geo_sig_field}",  # GeoJSON 속성 키
+                    locations="시군구",
+                    featureidkey="properties.ADZONE_NM",  # GeoJSON 속성 이름
                     color="감소량(기준-비교)",
+                    color_continuous_scale="RdBu_r",
+                    color_continuous_midpoint=0,  # 0 기준으로 파랑(감소)/빨강(증가)
                     hover_name="시군구",
                     hover_data={
-                        f"{base_year}년 가스레인지 수(연간합계)": ":,",
-                        f"{comp_year}년 가스레인지 수(연간합계)": ":,",
+                        base_col: ":,",
+                        comp_col: ":,",
                         "감소량(기준-비교)": ":,",
                         "감소율(%)": True,
                     },
                     title=f"{base_year}년 → {comp_year}년 대구시 구·군 + 경산시 시군구별 가스레인지 감소량",
                 )
                 fig_map.update_geos(fitbounds="locations", visible=False)
+                fig_map.update_traces(marker_line_color="white", marker_line_width=0.7)
                 fig_map.update_layout(
                     margin=dict(l=0, r=0, t=40, b=0),
                     coloraxis_colorbar=dict(title="감소량"),
@@ -586,6 +548,6 @@ with tab2:
             """
             - **감소량(기준-비교)** : 기준연도 연간 가스레인지 수 − 비교연도 연간 가스레인지 수  
             - **감소율(%)** : 감소량 ÷ 기준연도 연간 가스레인지 수 × 100  
-            - 시군구 선택 필터와 무관하게, 대구 8개 구·군 + 경산시만 지도/표에 표시됨.
+            - 지도 색상: 파란색(음수, 감소), 빨간색(양수, 증가)에 가까울수록 변화 폭이 큼.
             """
         )
