@@ -1,6 +1,6 @@
 # app.py ─ 가정용 가스레인지 감소 분석 (대구 + 경산)
-# - ① 월별·연도별 추이 (연간/월간, 정점 이후 하이라이트)
-# - ② 대구시 구·군 + 경산시 시군구별 감소량 지도 + 비교표
+# - ① 월별·연도별 추이
+# - ② 군구별 감소량 지도 (대구 8개 구·군 + 경산시)
 
 from pathlib import Path
 import json
@@ -16,7 +16,7 @@ import streamlit as st
 # ─────────────────────────────────────
 st.set_page_config(
     page_title="가정용 가스레인지 감소 분석 (대구)",
-    layout="wide"
+    layout="wide",
 )
 st.title("🏠 가정용 가스레인지 감소 분석 (대구)")
 
@@ -44,7 +44,7 @@ TARGET_SIGUNGU = [
 @st.cache_data
 def load_data() -> pd.DataFrame:
     """엑셀 원시파일에서 분석용 데이터프레임 생성"""
-    # 1) 헤더 없는 상태로 전체 읽기 (위에 기간 설명 행 등 포함)
+    # 1) 헤더 없는 상태로 전체 읽기
     raw = pd.read_excel(DATA_PATH, sheet_name=0, header=None)
 
     # 2) 첫 열에서 '구분'이 있는 행을 찾아 헤더로 사용
@@ -85,9 +85,8 @@ def load_data() -> pd.DataFrame:
     return df
 
 
-@st.cache_data
 def load_geojson():
-    """대구+경산 시군구 GeoJSON 로딩"""
+    """대구+경산 시군구 GeoJSON 로딩 (속성 필드: 시군구)"""
     try:
         with open(GEO_PATH, encoding="utf-8") as f:
             return json.load(f)
@@ -111,30 +110,30 @@ st.sidebar.header("⚙️ 분석 조건")
 base_year, comp_year = st.sidebar.select_slider(
     "기준연도 / 비교연도",
     options=years,
-    value=(years[0], years[-1])
+    value=(years[0], years[-1]),
 )
 
 usage_sel = st.sidebar.multiselect(
     "용도 선택 (복수 선택 가능)",
     options=usage_list,
-    default=usage_list
+    default=usage_list,
 )
 product_sel = st.sidebar.multiselect(
     "상품 선택 (복수 선택 가능)",
     options=product_list,
-    default=product_list
+    default=product_list,
 )
 district_sel = st.sidebar.multiselect(
     "시군구 선택 (복수 선택 가능, 비우면 전체)",
     options=district_list,
-    default=district_list
+    default=district_list,
 )
 
 # 필터 적용
 df = df_raw.copy()
 df = df[df[COL_USAGE].isin(usage_sel)]
 df = df[df[COL_PRODUCT].isin(product_sel)]
-if len(district_sel) > 0:
+if district_sel:
     df = df[df[COL_DISTRICT].isin(district_sel)]
 
 st.sidebar.markdown("---")
@@ -292,7 +291,7 @@ with tab1:
                 yanchor="bottom",
                 y=1.02,
                 xanchor="right",
-                x=1
+                x=1,
             ),
         )
         st.plotly_chart(fig_year_ts, use_container_width=True)
@@ -370,7 +369,7 @@ with tab1:
                     yanchor="bottom",
                     y=1.02,
                     xanchor="right",
-                    x=1
+                    x=1,
                 ),
             )
             fig_month_ts.update_xaxes(tickformat="%Y.%m")
@@ -454,7 +453,6 @@ with tab1:
         )
         fig_heat.update_xaxes(side="top")
         st.plotly_chart(fig_heat, use_container_width=True)
-
 
 # ─────────────────────────────────────
 # ② 군구별 감소량 지도 (대구 전 구·군 + 경산시)
@@ -542,16 +540,17 @@ with tab2:
                     "daegu_gyeongsan_sgg.geojson 파일이 data 폴더에 있는지 확인해줘."
                 )
             else:
-                # 색상 범위를 0 기준으로 대칭 설정 (감소 많을수록 진한 파란색)
-                vmin = map_table["감소량(기준-비교)"].min()
-                vmax = map_table["감소량(기준-비교)"].max()
-                vmax_abs = max(abs(vmin), abs(vmax))
+                # 색상 스케일을 대칭으로 맞추기
+                vmax = pivot_map["감소량(기준-비교)"].abs().max()
+                vmax = max(vmax, 1)
+                vmax = np.ceil(vmax / 50000) * 50000
+                vmax_abs = float(vmax)
 
                 fig_map = px.choropleth(
                     map_table,
                     geojson=geojson,
-                    locations="시군구",                   # DataFrame 키
-                    featureidkey="properties.ADZONE_NM",  # GeoJSON 속성 키 (★중요★)
+                    locations="시군구",            # DataFrame 키
+                    featureidkey="properties.시군구",  # GeoJSON 속성 키 (시군구 이름)
                     color="감소량(기준-비교)",
                     color_continuous_scale="RdBu_r",
                     range_color=[-vmax_abs, vmax_abs],
@@ -575,6 +574,6 @@ with tab2:
             """
             - **감소량(기준-비교)** : 기준연도 연간 가스레인지 수 − 비교연도 연간 가스레인지 수  
             - **감소율(%)** : 감소량 ÷ 기준연도 연간 가스레인지 수 × 100  
-            - 시군구 선택 필터와 무관하게, 지도는 대구 8개 구·군 + 경산시 9개만 표시돼.
+            - 시군구 선택 필터와 무관하게, 대구 8개 구·군 + 경산시만 지도/표에 표시됨.
             """
         )
