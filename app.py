@@ -1,6 +1,6 @@
 # app.py ─ 가정용 가스레인지 감소 분석 (대구 + 경산)
-# - ① 월별·연도별 추이
-# - ② 대구 8개 구·군 + 경산시 군구별 감소량 지도
+# - ① 월별·연도별 추이 (연간/월간, 정점 이후 하이라이트)
+# - ② 대구시 구·군 + 경산시 군구별 감소량 지도 + 비교표
 
 from pathlib import Path
 import json
@@ -10,7 +10,6 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
-
 
 # ─────────────────────────────────────
 # 기본 설정
@@ -38,7 +37,6 @@ TARGET_SIGUNGU = [
     "수성구", "달서구", "달성군",
     "경산시",
 ]
-
 
 # ─────────────────────────────────────
 # 데이터 로딩
@@ -105,7 +103,6 @@ usage_list = sorted(df_raw[COL_USAGE].unique())
 product_list = sorted(df_raw[COL_PRODUCT].unique())
 district_list = sorted(df_raw[COL_DISTRICT].unique())
 
-
 # ─────────────────────────────────────
 # 사이드바 필터
 # ─────────────────────────────────────
@@ -143,16 +140,13 @@ if len(district_sel) > 0:
 st.sidebar.markdown("---")
 st.sidebar.write(f"데이터 행 수: **{len(df):,}**")
 
-
 # ─────────────────────────────────────
 # 탭 구성
 # ─────────────────────────────────────
 tab1, tab2 = st.tabs(["① 월별·연도별 추이", "② 군구별 감소량 지도"])
 
-
 # ─────────────────────────────────────
 # ① 월별·연도별 추이
-# (예전 코드 그대로 사용)
 # ─────────────────────────────────────
 with tab1:
     st.subheader("① 월별·연도별 가스레인지 수 추이")
@@ -461,7 +455,6 @@ with tab1:
         fig_heat.update_xaxes(side="top")
         st.plotly_chart(fig_heat, use_container_width=True)
 
-
 # ─────────────────────────────────────
 # ② 군구별 감소량 지도 (대구 전 구·군 + 경산시)
 # ─────────────────────────────────────
@@ -474,50 +467,28 @@ with tab2:
     df_map = df_map[df_map[COL_PRODUCT].isin(product_sel)]
     df_map = df_map[df_map[COL_DISTRICT].isin(TARGET_SIGUNGU)]
 
-    # 기준/비교 연도만 추출
     map_df = df_map[df_map["연도"].isin([base_year, comp_year])]
 
     if map_df.empty:
         st.info("현재 필터 조건에 해당하는 대구+경산 시군구 데이터가 없어.")
     else:
-        # 시군구별 집계
         grouped = (
             map_df.groupby(["연도", COL_DISTRICT], as_index=False)[COL_RANGE_CNT]
             .sum()
         )
 
-        # 시군구별 geo_key(공백 제거) 생성
-        key_df = (
-            grouped[[COL_DISTRICT]]
-            .drop_duplicates()
-            .rename(columns={COL_DISTRICT: "시군구"})
-        )
-        key_df["geo_key"] = (
-            key_df["시군구"]
-            .astype(str)
-            .str.strip()
-            .str.replace(" ", "", regex=False)
+        pivot_map = (
+            grouped
+            .pivot(index=COL_DISTRICT, columns="연도", values=COL_RANGE_CNT)
+            .reindex(index=TARGET_SIGUNGU)
+            .fillna(0)
         )
 
-        # 피벗 (기준/비교 연도 컬럼)
-        pivot_map = grouped.pivot(
-            index=COL_DISTRICT,
-            columns="연도",
-            values=COL_RANGE_CNT
-        )
-        pivot_map = pivot_map.reindex(TARGET_SIGUNGU).fillna(0)
-        pivot_map = pivot_map.reset_index().rename(columns={COL_DISTRICT: "시군구"})
-
-        # geo_key 붙이기
-        pivot_map = pivot_map.merge(key_df, on="시군구", how="left")
-
-        # 기준/비교 연도 없으면 0 컬럼 추가
         if base_year not in pivot_map.columns:
             pivot_map[base_year] = 0
         if comp_year not in pivot_map.columns:
             pivot_map[comp_year] = 0
 
-        # 감소량, 감소율 계산
         pivot_map["감소량(기준-비교)"] = pivot_map[base_year] - pivot_map[comp_year]
         pivot_map["감소율(%)"] = np.where(
             pivot_map[base_year] > 0,
@@ -526,12 +497,16 @@ with tab2:
         )
         pivot_map["감소율(%)"] = pivot_map["감소율(%)"].round(1)
 
-        map_table = pivot_map.rename(
+        map_table = pivot_map.reset_index().rename(
             columns={
+                COL_DISTRICT: "시군구",
                 base_year: f"{base_year}년 가스레인지 수(연간합계)",
                 comp_year: f"{comp_year}년 가스레인지 수(연간합계)",
             }
         )
+
+        # 시군구 이름에서 공백 제거한 geo_key (DataFrame 쪽)
+        map_table["geo_key"] = map_table["시군구"].astype(str).str.strip().str.replace(" ", "", regex=False)
 
         c1, c2 = st.columns([2, 3])
 
@@ -569,32 +544,53 @@ with tab2:
                     "daegu_gyeongsan_sgg.geojson 파일이 data 폴더에 있는지 확인해줘."
                 )
             else:
-                # GeoJSON 쪽에도 geo_key 추가 (시군구 이름에서 공백 제거)
+                # 1) GeoJSON 속성 중에서 '중구, 동구 …' 가 들어 있는 필드 자동 탐색
+                first_props = geojson["features"][0]["properties"]
+                candidate_keys = list(first_props.keys())
+
+                region_key = None
+                for key in candidate_keys:
+                    vals = {
+                        str(f["properties"].get(key, "")).strip().replace(" ", "")
+                        for f in geojson["features"]
+                    }
+                    if any(v in TARGET_SIGUNGU for v in vals):
+                        region_key = key
+                        break
+
+                # 혹시 못 찾으면 첫 번째 속성 사용 (최악 대비)
+                if region_key is None:
+                    region_key = candidate_keys[0]
+
+                # 2) GeoJSON 에 geo_key 생성 (공백 제거)
                 for feat in geojson["features"]:
-                    name = str(feat["properties"].get("시군구", "")).strip()
+                    name = str(feat["properties"].get(region_key, "")).strip()
                     feat["properties"]["geo_key"] = name.replace(" ", "")
 
-                # 색상 스케일 대칭 맞추기
+                # 디버그용: GeoJSON에 어떤 이름들이 있는지 표시
+                geo_names = sorted(
+                    {
+                        str(f["properties"].get(region_key, "")).strip()
+                        for f in geojson["features"]
+                    }
+                )
+                st.caption(
+                    f"GeoJSON feature 개수: {len(geojson['features'])}, "
+                    f"사용한 속성 필드: '{region_key}', 시군구 목록: {', '.join(geo_names)}"
+                )
+
+                # 3) 색상 스케일 대칭 맞추기 (감소량 기준)
                 vmax = map_table["감소량(기준-비교)"].abs().max()
                 vmax = max(vmax, 1)
                 vmax = np.ceil(vmax / 50000) * 50000
                 vmax_abs = float(vmax)
 
-                # 디버그용: GeoJSON 시군구 목록
-                geo_names = sorted({
-                    str(f["properties"].get("시군구", "")).strip()
-                    for f in geojson["features"]
-                })
-                st.caption(
-                    f"GeoJSON feature 개수: {len(geojson['features'])}, "
-                    f"시군구 목록: {', '.join(geo_names)}"
-                )
-
+                # 4) 지도를 실제로 그림
                 fig_map = px.choropleth(
                     map_table,
                     geojson=geojson,
-                    locations="geo_key",                 # 데이터프레임 키
-                    featureidkey="properties.geo_key",   # GeoJSON 키
+                    locations="geo_key",                 # DataFrame의 geo_key
+                    featureidkey="properties.geo_key",   # GeoJSON의 geo_key
                     color="감소량(기준-비교)",
                     color_continuous_scale="RdBu_r",
                     range_color=[-vmax_abs, vmax_abs],
