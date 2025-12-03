@@ -87,25 +87,36 @@ def load_data() -> pd.DataFrame:
 
 @st.cache_data
 def load_geojson():
-    """대구+경산 시군구 GeoJSON 로딩"""
+    """대구+경산 시군구 GeoJSON 로딩 + 시군구 이름이 가장 잘 맞는 속성 필드 자동 선택"""
     try:
         with open(GEO_PATH, encoding="utf-8") as f:
             gj = json.load(f)
     except FileNotFoundError:
         return None, None
 
-    # 시군구 이름이 들어 있는 속성 필드 자동 탐색
-    props_keys = list(gj["features"][0]["properties"].keys())
-    cand_keys = ["시군구", "SIG_KOR_NM", "SIGUNGU", "ADZONE_NM"]
-    for ck in cand_keys:
-        if ck in props_keys:
-            name_field = ck
-            break
-    else:
-        # 위 후보가 하나도 없으면 첫 번째 필드 사용
-        name_field = props_keys[0]
+    features = gj.get("features", [])
+    if not features:
+        return gj, None
 
-    return gj, name_field
+    props_keys = list(features[0]["properties"].keys())
+
+    # 각 속성 필드별로 TARGET_SIGUNGU(중구, 동구, …)가
+    # 값 안에 몇 개나 들어 있는지 스코어 계산해서 제일 잘 맞는 필드 선택
+    best_field = None
+    best_score = -1
+    target_set = set(TARGET_SIGUNGU)
+
+    for key in props_keys:
+        values = [str(f["properties"].get(key, "")) for f in features]
+        score = 0
+        for d in target_set:
+            if any(d in v for v in values):
+                score += 1
+        if score > best_score:
+            best_score = score
+            best_field = key
+
+    return gj, best_field
 
 
 df_raw = load_data()
@@ -518,13 +529,31 @@ with tab2:
             }
         )
 
-        # 디버깅용: GeoJSON feature 이름 리스트
-        if geojson is not None:
-            feature_names = [f["properties"].get(GEO_NAME_FIELD, "") for f in geojson["features"]]
+        # ─ GeoJSON 디버깅 & 매핑 ─
+        if geojson is not None and GEO_NAME_FIELD is not None:
+            geo_names = [
+                str(f["properties"].get(GEO_NAME_FIELD, ""))
+                for f in geojson["features"]
+            ]
+
+            def find_geo_name(d):
+                # 시군구명이 들어 있는 GeoJSON 속성 값 찾기
+                for name in geo_names:
+                    if d in name:
+                        return name
+                return d  # 그래도 못 찾으면 그냥 원래 이름으로
+
+            map_table["geo_key"] = map_table["시군구"].apply(find_geo_name)
+
             st.caption(
-                f"GeoJSON feature 개수: {len(feature_names)}, "
-                f"{GEO_NAME_FIELD} 목록: {', '.join(feature_names)}"
+                f"GeoJSON feature 개수: {len(geo_names)}, "
+                f"선택된 속성필드: {GEO_NAME_FIELD}, "
+                f"값 목록: {', '.join(geo_names)}"
             )
+        else:
+            # fallback
+            map_table["geo_key"] = map_table["시군구"]
+            st.caption("GeoJSON 속성 필드를 자동 선택하지 못했어. 시군구 이름 그대로 사용 중.")
 
         c1, c2 = st.columns([2, 3])
 
@@ -556,16 +585,16 @@ with tab2:
 
         # 지도
         with c2:
-            if geojson is None:
+            if geojson is None or GEO_NAME_FIELD is None:
                 st.warning(
-                    f"대구+경산 GeoJSON({GEO_PATH})을 찾을 수 없어서 지도를 그릴 수 없어.  "
-                    "daegu_gyeongsan_sgg.geojson 파일이 data 폴더에 있는지 확인해줘."
+                    f"대구+경산 GeoJSON({GEO_PATH})을 찾을 수 없거나, "
+                    "시군구 이름이 들어 있는 속성 필드를 찾지 못해서 지도를 그릴 수 없어."
                 )
             else:
                 fig_map = px.choropleth(
                     map_table,
                     geojson=geojson,
-                    locations="시군구",
+                    locations="geo_key",
                     featureidkey=f"properties.{GEO_NAME_FIELD}",
                     color="감소량(기준-비교)",
                     hover_name="시군구",
@@ -585,9 +614,7 @@ with tab2:
                     visible=False,
                 )
 
-                # 모든 choropleth 트레이스에 경계선 적용
                 fig_map.update_traces(
-                    selector=dict(type="choropleth"),
                     marker_line_width=0.8,
                     marker_line_color="white",
                 )
