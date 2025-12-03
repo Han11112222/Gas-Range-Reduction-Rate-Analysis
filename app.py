@@ -508,10 +508,7 @@ with tab2:
         # 디버깅용: GeoJSON feature 이름 리스트
         if geojson is not None:
             feature_names = [f["properties"].get("시군구") for f in geojson["features"]]
-            st.caption(
-                f"GeoJSON feature 개수: {len(feature_names)}, "
-                f"시군구 목록: {', '.join(feature_names)}"
-            )
+            st.caption(f"GeoJSON feature 개수: {len(feature_names)}, 시군구 목록: {', '.join(feature_names)}")
 
         c1, c2 = st.columns([2, 3])
 
@@ -566,21 +563,21 @@ with tab2:
                     color_continuous_midpoint=0,
                 )
 
-                # ── 여기서 경계선/레이아웃 세팅 (수정된 부분) ──
+                # 지오 설정
                 fig_map.update_geos(
                     fitbounds="locations",
                     visible=False,
                 )
-                fig_map.update_traces(
-                    selector=dict(type="choropleth"),
-                    marker=dict(
-                        line=dict(
-                            width=1.2,
-                            color="white",
-                        )
-                    ),
-                    opacity=0.95,
-                )
+
+                # ★ 여기서 trace에 직접 접근해서 경계선/투명도 세팅 ★
+                if fig_map.data:
+                    tr = fig_map.data[0]
+                    # 경계선 색/두께
+                    tr.marker.line.width = 1.2
+                    tr.marker.line.color = "white"
+                    # 폴리곤 투명도
+                    tr.opacity = 0.95
+
                 fig_map.update_layout(
                     margin=dict(l=0, r=0, t=40, b=0),
                     coloraxis_colorbar=dict(title="감소량"),
