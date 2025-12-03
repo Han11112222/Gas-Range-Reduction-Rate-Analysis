@@ -508,7 +508,10 @@ with tab2:
         # 디버깅용: GeoJSON feature 이름 리스트
         if geojson is not None:
             feature_names = [f["properties"].get("시군구") for f in geojson["features"]]
-            st.caption(f"GeoJSON feature 개수: {len(feature_names)}, 시군구 목록: {', '.join(feature_names)}")
+            st.caption(
+                f"GeoJSON feature 개수: {len(feature_names)}, "
+                f"시군구 목록: {', '.join(feature_names)}"
+            )
 
         c1, c2 = st.columns([2, 3])
 
@@ -563,14 +566,19 @@ with tab2:
                     color_continuous_midpoint=0,
                 )
 
-                # ── 여기서 경계선/레이아웃 세팅 ──
+                # ── 여기서 경계선/레이아웃 세팅 (수정된 부분) ──
                 fig_map.update_geos(
                     fitbounds="locations",
                     visible=False,
                 )
                 fig_map.update_traces(
-                    marker_line_width=1.2,
-                    marker_line_color="white",
+                    selector=dict(type="choropleth"),
+                    marker=dict(
+                        line=dict(
+                            width=1.2,
+                            color="white",
+                        )
+                    ),
                     opacity=0.95,
                 )
                 fig_map.update_layout(
