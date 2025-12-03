@@ -1,6 +1,6 @@
 # app.py ─ 가정용 가스레인지 감소 분석 (대구 + 경산)
 # - ① 월별·연도별 추이
-# - ② 군구별 감소량 지도 (대구 전 구·군 + 경산시)
+# - ② 대구시 8개 구·군 + 경산시 감소량 지도
 
 from pathlib import Path
 import json
@@ -20,7 +20,7 @@ st.set_page_config(
 )
 st.title("🏠 가정용 가스레인지 감소 분석 (대구)")
 
-# 데이터/지도 경로
+# 데이터 / GeoJSON 경로
 DATA_PATH = Path(__file__).parent / "(ver2)가정용_가스레인지_사용유무.xlsx"
 GEO_PATH = Path(__file__).parent / "data" / "daegu_gyeongsan_sgg.geojson"
 
@@ -29,9 +29,9 @@ COL_YEAR_MONTH = "구분"        # 201501, 201502 …
 COL_USAGE = "용도"             # 단독주택 / 공동주택
 COL_PRODUCT = "상품"           # 취사용 / 취사난방용 / 개별난방용
 COL_DISTRICT = "시군구"        # 중구 / 동구 / 경산시 …
-COL_RANGE_CNT = "가스레인지수"   # 엑셀에 맞게 필요하면 수정
+COL_RANGE_CNT = "가스레인지수"   # 엑셀 수량 컬럼
 
-# 대구 + 경산 시군구 목록 (표/지도 정렬 기준)
+# 대구 + 경산 시군구(표/지도 정렬 기준)
 TARGET_SIGUNGU = [
     "중구", "동구", "서구", "남구", "북구",
     "수성구", "달서구", "달성군",
@@ -44,29 +44,29 @@ TARGET_SIGUNGU = [
 @st.cache_data
 def load_data() -> pd.DataFrame:
     """엑셀 원시파일에서 분석용 데이터프레임 생성"""
-    # 1) 헤더 없는 상태로 전체 읽기 (위에 기간 설명 행 등 포함)
+    # 1) 헤더 없이 읽어서 헤더 행 찾기
     raw = pd.read_excel(DATA_PATH, sheet_name=0, header=None)
 
-    # 2) 첫 열에서 '구분'이 있는 행을 찾아 헤더로 사용
+    # 첫 열에서 '구분' 행을 찾는다
     first_col = raw.iloc[:, 0].astype(str).str.strip()
     header_rows = first_col[first_col == COL_YEAR_MONTH].index.tolist()
     if not header_rows:
-        st.error(f"엑셀에서 '{COL_YEAR_MONTH}' 헤더 행을 찾지 못했어. 엑셀 컬럼명을 한 번 확인해줘.")
+        st.error(f"엑셀에서 '{COL_YEAR_MONTH}' 헤더 행을 찾지 못했어. 엑셀 컬럼명을 확인해줘.")
         st.stop()
     header_idx = header_rows[0]
 
-    # 3) 헤더/데이터 분리
+    # 2) 헤더/데이터 분리
     header = raw.iloc[header_idx].tolist()
     df = raw.iloc[header_idx + 1:].copy()
     df.columns = header
     df = df.dropna(how="all")
 
-    # 4) 구분 → 연도, 월
+    # 3) 구분 → 연도, 월
     df[COL_YEAR_MONTH] = df[COL_YEAR_MONTH].astype(str).str.strip()
     df["연도"] = df[COL_YEAR_MONTH].str[:4].astype(int)
     df["월"] = df[COL_YEAR_MONTH].str[4:6].astype(int)
 
-    # 5) 가스레인지 수 숫자 변환
+    # 4) 가스레인지 수 숫자 변환
     df[COL_RANGE_CNT] = (
         df[COL_RANGE_CNT]
         .astype(str)
@@ -78,7 +78,7 @@ def load_data() -> pd.DataFrame:
         .astype(int)
     )
 
-    # 6) 문자열 컬럼 정리
+    # 5) 문자열 컬럼 정리
     for c in [COL_USAGE, COL_PRODUCT, COL_DISTRICT]:
         df[c] = df[c].astype(str).str.strip()
 
@@ -90,11 +90,9 @@ def load_geojson():
     """대구+경산 시군구 GeoJSON 로딩"""
     try:
         with open(GEO_PATH, encoding="utf-8") as f:
-            gj = json.load(f)
+            return json.load(f)
     except FileNotFoundError:
         return None
-
-    return gj
 
 
 df_raw = load_data()
@@ -458,7 +456,7 @@ with tab1:
         st.plotly_chart(fig_heat, use_container_width=True)
 
 # ─────────────────────────────────────
-# ② 군구별 감소량 지도 (대구 전 구·군 + 경산시)
+# ② 군구별 감소량 지도 (대구 8개 구·군 + 경산시)
 # ─────────────────────────────────────
 with tab2:
     st.subheader("② 기준연도 대비 군구별 가스레인지 감소량 지도 (대구 + 경산)")
@@ -471,12 +469,7 @@ with tab2:
 
     map_df = df_map[df_map["연도"].isin([base_year, comp_year])]
 
-    if geojson is None:
-        st.warning(
-            f"대구+경산 GeoJSON({GEO_PATH})을 찾을 수 없어서 지도를 그릴 수 없어.  "
-            "daegu_gyeongsan_sgg.geojson 파일이 data 폴더에 있는지 확인해줘."
-        )
-    elif map_df.empty:
+    if map_df.empty:
         st.info("현재 필터 조건에 해당하는 대구+경산 시군구 데이터가 없어.")
     else:
         grouped = (
@@ -491,10 +484,10 @@ with tab2:
             .fillna(0)
         )
 
-        # 기준/비교 연도 컬럼 없으면 0으로 채우기
-        for y in [base_year, comp_year]:
-            if y not in pivot_map.columns:
-                pivot_map[y] = 0
+        if base_year not in pivot_map.columns:
+            pivot_map[base_year] = 0
+        if comp_year not in pivot_map.columns:
+            pivot_map[comp_year] = 0
 
         pivot_map["감소량(기준-비교)"] = pivot_map[base_year] - pivot_map[comp_year]
         pivot_map["감소율(%)"] = np.where(
@@ -512,7 +505,11 @@ with tab2:
             }
         )
 
-        # 표/지도 2열 배치
+        # 디버깅용: GeoJSON feature 이름 리스트
+        if geojson is not None:
+            feature_names = [f["properties"].get("시군구") for f in geojson["features"]]
+            st.caption(f"GeoJSON feature 개수: {len(feature_names)}, 시군구 목록: {', '.join(feature_names)}")
+
         c1, c2 = st.columns([2, 3])
 
         # 표
@@ -543,38 +540,51 @@ with tab2:
 
         # 지도
         with c2:
-            # 핵심 수정 부분: GeoJSON 속성 이름 = "시군구"
-            fig_map = px.choropleth(
-                map_table,
-                geojson=geojson,
-                locations="시군구",                 # DataFrame 키
-                featureidkey="properties.시군구",     # GeoJSON 속성 키 (시군구 이름)
-                color="감소량(기준-비교)",
-                hover_name="시군구",
-                hover_data={
-                    f"{base_year}년 가스레인지 수(연간합계)": ":,",
-                    f"{comp_year}년 가스레인지 수(연간합계)": ":,",
-                    "감소량(기준-비교)": ":,",
-                    "감소율(%)": True,
-                },
-                color_continuous_scale="RdBu",
-                color_continuous_midpoint=0,
-                title=f"{base_year}년 → {comp_year}년 대구시 구·군 + 경산시 시군구별 가스레인지 감소량",
-            )
-            fig_map.update_geos(
-                fitbounds="locations",
-                visible=False,
-            )
-            fig_map.update_layout(
-                margin=dict(l=0, r=0, t=40, b=0),
-                coloraxis_colorbar=dict(title="감소량"),
-            )
-            st.plotly_chart(fig_map, use_container_width=True)
+            if geojson is None:
+                st.warning(
+                    f"대구+경산 GeoJSON({GEO_PATH})을 찾을 수 없어서 지도를 그릴 수 없어.  "
+                    "daegu_gyeongsan_sgg.geojson 파일이 data 폴더에 있는지 확인해줘."
+                )
+            else:
+                fig_map = px.choropleth(
+                    map_table,
+                    geojson=geojson,
+                    locations="시군구",
+                    featureidkey="properties.시군구",
+                    color="감소량(기준-비교)",
+                    hover_name="시군구",
+                    hover_data={
+                        f"{base_year}년 가스레인지 수(연간합계)": ":,",
+                        f"{comp_year}년 가스레인지 수(연간합계)": ":,",
+                        "감소량(기준-비교)": ":,",
+                        "감소율(%)": True,
+                    },
+                    color_continuous_scale="RdBu_r",
+                    color_continuous_midpoint=0,
+                )
+
+                # ── 여기서 경계선/레이아웃 세팅 ──
+                fig_map.update_geos(
+                    fitbounds="locations",
+                    visible=False,
+                )
+                fig_map.update_traces(
+                    marker_line_width=1.2,
+                    marker_line_color="white",
+                    opacity=0.95,
+                )
+                fig_map.update_layout(
+                    margin=dict(l=0, r=0, t=40, b=0),
+                    coloraxis_colorbar=dict(title="감소량"),
+                    title=f"{base_year}년 → {comp_year}년 대구시 구·군 + 경산시 시군구별 가스레인지 감소량",
+                )
+
+                st.plotly_chart(fig_map, use_container_width=True)
 
         st.markdown(
             """
             - **감소량(기준-비교)** : 기준연도 연간 가스레인지 수 − 비교연도 연간 가스레인지 수  
             - **감소율(%)** : 감소량 ÷ 기준연도 연간 가스레인지 수 × 100  
-            - 지도는 GeoJSON의 `시군구` 필드와 표의 `시군구` 값이 1:1로 매칭되도록 구성됨.
+            - 시군구 선택 필터와 무관하게, 대구 8개 구·군 + 경산시만 지도/표에 표시됨.
             """
         )
