@@ -90,13 +90,26 @@ def load_geojson():
     """대구+경산 시군구 GeoJSON 로딩"""
     try:
         with open(GEO_PATH, encoding="utf-8") as f:
-            return json.load(f)
+            gj = json.load(f)
     except FileNotFoundError:
-        return None
+        return None, None
+
+    # 시군구 이름이 들어 있는 속성 필드 자동 탐색
+    props_keys = list(gj["features"][0]["properties"].keys())
+    cand_keys = ["시군구", "SIG_KOR_NM", "SIGUNGU", "ADZONE_NM"]
+    for ck in cand_keys:
+        if ck in props_keys:
+            name_field = ck
+            break
+    else:
+        # 위 후보가 하나도 없으면 첫 번째 필드 사용
+        name_field = props_keys[0]
+
+    return gj, name_field
 
 
 df_raw = load_data()
-geojson = load_geojson()
+geojson, GEO_NAME_FIELD = load_geojson()
 
 years = sorted(df_raw["연도"].unique())
 usage_list = sorted(df_raw[COL_USAGE].unique())
@@ -507,8 +520,11 @@ with tab2:
 
         # 디버깅용: GeoJSON feature 이름 리스트
         if geojson is not None:
-            feature_names = [f["properties"].get("시군구") for f in geojson["features"]]
-            st.caption(f"GeoJSON feature 개수: {len(feature_names)}, 시군구 목록: {', '.join(feature_names)}")
+            feature_names = [f["properties"].get(GEO_NAME_FIELD, "") for f in geojson["features"]]
+            st.caption(
+                f"GeoJSON feature 개수: {len(feature_names)}, "
+                f"{GEO_NAME_FIELD} 목록: {', '.join(feature_names)}"
+            )
 
         c1, c2 = st.columns([2, 3])
 
@@ -550,7 +566,7 @@ with tab2:
                     map_table,
                     geojson=geojson,
                     locations="시군구",
-                    featureidkey="properties.시군구",
+                    featureidkey=f"properties.{GEO_NAME_FIELD}",
                     color="감소량(기준-비교)",
                     hover_name="시군구",
                     hover_data={
@@ -563,21 +579,17 @@ with tab2:
                     color_continuous_midpoint=0,
                 )
 
-                # 지오 설정
+                # 경계선 및 레이아웃 세팅
                 fig_map.update_geos(
                     fitbounds="locations",
                     visible=False,
                 )
 
-                # 경계선만 설정 (opacity는 건드리지 않음)
+                # 모든 choropleth 트레이스에 경계선 적용
                 fig_map.update_traces(
                     selector=dict(type="choropleth"),
-                    marker=dict(
-                        line=dict(
-                            width=1.2,
-                            color="white",
-                        )
-                    ),
+                    marker_line_width=0.8,
+                    marker_line_color="white",
                 )
 
                 fig_map.update_layout(
