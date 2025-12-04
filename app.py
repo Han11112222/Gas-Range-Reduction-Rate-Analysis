@@ -1,6 +1,6 @@
 # app.py ─ 가정용 가스레인지 감소 분석 (대구 + 경산)
-# - 분석1: ① 월별·연도별 추이  /  ② 대구시 8개 구·군 + 경산시 감소량 지도
-# - 분석2: 인덕션(비가스렌지) 추정 + 사용량 감소 추정 (연도별 / 시군구·용도별)
+# - 분석1(인덕션 사용량 분석 1st): ① 월별·연도별 추이  /  ② 대구시 8개 구·군 + 경산시 감소량 지도
+# - 분석2(인덕션 사용량 분석 2nd): 인덕션(비가스렌지) 추정 + 사용량 감소 추정 (연도별 / 시군구·용도별)
 
 from pathlib import Path
 import json
@@ -220,9 +220,15 @@ product_list = sorted(df_raw[COL_PRODUCT].unique())
 district_list = sorted(df_raw[COL_DISTRICT].unique())
 
 # ─────────────────────────────────────
-# 사이드바: 공통 필터 + 분석1/분석2 선택
+# 사이드바: 분석탭 선택을 최상단으로 + 공통 필터
 # ─────────────────────────────────────
 st.sidebar.header("⚙️ 분석 조건")
+
+analysis_mode = st.sidebar.radio(
+    "분석 탭 선택",
+    ["1. 인덕션 사용량 분석 1st", "2. 인덕션 사용량 분석 2nd"],
+    index=0,
+)
 
 base_year, comp_year = st.sidebar.select_slider(
     "기준연도 / 비교연도",
@@ -246,12 +252,6 @@ district_sel = st.sidebar.multiselect(
     default=district_list
 )
 
-analysis_mode = st.sidebar.radio(
-    "분석 탭 선택",
-    ["분석1: 가스레인지 수·지도", "분석2: 인덕션·사용량 분석"],
-    index=0,
-)
-
 # 공통 필터를 df_raw에 적용 (분석1 기본)
 df = df_raw.copy()
 df = df[df[COL_USAGE].isin(usage_sel)]
@@ -265,8 +265,10 @@ st.sidebar.write(f"데이터 행 수(분석1 기준): **{len(df):,}**")
 
 # ─────────────────────────────────────
 # 분석1: 기존 월별·연도별 추이 + 군구별 감소량 지도
+# (인덕션 사용량 분석 1st)
 # ─────────────────────────────────────
-if analysis_mode.startswith("분석1"):
+if analysis_mode.startswith("1."):
+    st.subheader("인덕션 사용량 분석 1st ─ 가스레인지 수 추이 및 군구별 감소량 지도")
 
     tab1, tab2 = st.tabs(["① 월별·연도별 추이", "② 군구별 감소량 지도"])
 
@@ -352,7 +354,7 @@ if analysis_mode.startswith("분석1"):
 
             show_month = st.checkbox("월간 추이 함께 보기 (YYYY.MM)", value=False)
 
-            # ─ 연간 그래프 ─
+            # ─ 연간 그래프 ─ (2번째 스크린샷에 해당)
             yearly_graph = yearly[["연도", "연간합계"]].copy()
             pre_mask_y = yearly_graph["연도"] <= peak_year_y
             post_mask_y = yearly_graph["연도"] >= peak_year_y
@@ -744,9 +746,10 @@ if analysis_mode.startswith("분석1"):
 
 # ─────────────────────────────────────
 # 분석2: 인덕션 사용 추정 + 사용량 감소 추정
+# (인덕션 사용량 분석 2nd)
 # ─────────────────────────────────────
 else:
-    st.subheader("분석2 🔍 인덕션(비가스레인지) 사용 추정 및 사용량 감소 분석")
+    st.subheader("인덕션 사용량 분석 2nd ─ 인덕션(비가스레인지) 사용 추정 및 사용량 감소 분석")
 
     if df_usage_raw is None:
         st.warning(
@@ -898,6 +901,115 @@ else:
                         margin=dict(l=40, r=20, t=60, b=40),
                     )
                     st.plotly_chart(fig2, use_container_width=True)
+
+                # ─────────────────────────────
+                # ②번 분석 내용에 2번째 그래프 스타일 + 증감률 큰 연도 배경 표현
+                # ─────────────────────────────
+                st.markdown("#### 🔹 연도별 추정 인덕션 세대수 추이 (변동률이 큰 연도 배경 강조)")
+
+                trend = year_agg[["연도", "추정_인덕션세대수"]].copy()
+                if len(trend) >= 2:
+                    # 연도별 증감률 계산
+                    trend["증감률(%)"] = trend["추정_인덕션세대수"].pct_change() * 100
+
+                    # 정점 연도
+                    peak_idx = trend["추정_인덕션세대수"].idxmax()
+                    peak_year = int(trend.loc[peak_idx, "연도"])
+                    peak_val = float(trend.loc[peak_idx, "추정_인덕션세대수"])
+                    last_year = int(trend["연도"].iloc[-1])
+                    last_val = float(trend["추정_인덕션세대수"].iloc[-1])
+                    decline_pct = (last_val / peak_val - 1.0) * 100
+
+                    fig_trend = go.Figure()
+
+                    pre_mask = trend["연도"] <= peak_year
+                    post_mask = trend["연도"] >= peak_year
+
+                    fig_trend.add_trace(
+                        go.Scatter(
+                            x=trend.loc[pre_mask, "연도"],
+                            y=trend.loc[pre_mask, "추정_인덕션세대수"],
+                            mode="lines+markers",
+                            name="정점 이전",
+                            line=dict(color="lightgray", width=2, dash="dot"),
+                            marker=dict(size=6),
+                        )
+                    )
+                    fig_trend.add_trace(
+                        go.Scatter(
+                            x=trend.loc[post_mask, "연도"],
+                            y=trend.loc[post_mask, "추정_인덕션세대수"],
+                            mode="lines+markers",
+                            name="정점 이후",
+                            line=dict(color="royalblue", width=3),
+                            marker=dict(size=7),
+                        )
+                    )
+
+                    # 증감률이 큰 연도(상위 30% 절대값)를 배경으로 표시
+                    abs_changes = trend["증감률(%)"].dropna().abs()
+                    if len(abs_changes) > 0:
+                        threshold = np.percentile(abs_changes, 70)
+                        for _, row in trend.iterrows():
+                            year = int(row["연도"])
+                            rate = row["증감률(%)"]
+                            if pd.isna(rate) or abs(rate) < threshold:
+                                continue
+                            # 증감 방향에 따라 배경색 구분
+                            color = "LightSkyBlue" if rate > 0 else "MistyRose"
+                            fig_trend.add_vrect(
+                                x0=year - 0.5,
+                                x1=year + 0.5,
+                                fillcolor=color,
+                                opacity=0.22,
+                                layer="below",
+                                line_width=0,
+                            )
+
+                    # 정점/마지막 표시 (2번째 그래프 스타일 재사용)
+                    fig_trend.add_vline(x=peak_year, line_dash="dash", line_width=2)
+                    fig_trend.add_vrect(
+                        x0=peak_year,
+                        x1=trend["연도"].iloc[-1],
+                        fillcolor="LightSalmon",
+                        opacity=0.12,
+                        layer="below",
+                        line_width=0,
+                    )
+                    fig_trend.add_annotation(
+                        x=peak_year,
+                        y=peak_val,
+                        text=f"정점 {peak_year}",
+                        showarrow=True,
+                        arrowhead=2,
+                        ax=0,
+                        ay=-40,
+                    )
+                    fig_trend.add_annotation(
+                        x=last_year,
+                        y=last_val,
+                        text=f"마지막 {last_year}년\n(정점 대비 {decline_pct:.1f}%)",
+                        showarrow=True,
+                        arrowhead=2,
+                        ax=40,
+                        ay=40,
+                    )
+
+                    fig_trend.update_layout(
+                        title="연도별 추정 인덕션 세대수 추이\n(증감률이 큰 연도는 배경색으로 하이라이트)",
+                        xaxis_title="연도",
+                        yaxis_title="추정 인덕션 세대수",
+                        hovermode="x unified",
+                        margin=dict(l=40, r=20, t=80, b=40),
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1,
+                        ),
+                    )
+                    st.plotly_chart(fig_trend, use_container_width=True)
 
                 st.markdown("#### 🔹 연도별 요약표")
 
