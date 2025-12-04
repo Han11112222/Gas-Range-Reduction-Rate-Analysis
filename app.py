@@ -354,7 +354,7 @@ if analysis_mode.startswith("1."):
 
             show_month = st.checkbox("월간 추이 함께 보기 (YYYY.MM)", value=False)
 
-            # ─ 연간 그래프 ─ (2번째 스크린샷에 해당)
+            # ─ 연간 그래프 ─
             yearly_graph = yearly[["연도", "연간합계"]].copy()
             pre_mask_y = yearly_graph["연도"] <= peak_year_y
             post_mask_y = yearly_graph["연도"] >= peak_year_y
@@ -798,6 +798,13 @@ else:
                 )
                 year_agg.loc[year_agg["추정_인덕션세대수"] < 0, "추정_인덕션세대수"] = 0
 
+                # 인덕션 비중
+                year_agg["인덕션비중(%)"] = np.where(
+                    year_agg["전체청구전수합"] > 0,
+                    year_agg["추정_인덕션세대수"] / year_agg["전체청구전수합"] * 100,
+                    np.nan,
+                ).round(1)
+
                 # 가스레인지 1대당 평균 사용량
                 year_agg["가스레인지당_평균사용량"] = np.where(
                     year_agg["가스레인지수합"] > 0,
@@ -828,52 +835,63 @@ else:
 
                 c1, c2 = st.columns(2)
 
+                # ─ 왼쪽 그래프: 전체 청구전 = 가스레인지 + 인덕션 (스택) + 인덕션 비중 라인
                 with c1:
+                    st.markdown("#### 연도별 전체 청구전 구성 (가스레인지 세대 + 추정 인덕션 세대)")
+
                     fig1 = go.Figure()
                     fig1.add_trace(
                         go.Bar(
                             x=year_agg["연도"],
-                            y=year_agg["전체청구전수합"],
-                            name="전체 청구전수",
-                            opacity=0.6,
+                            y=year_agg["가스레인지수합"],
+                            name="가스레인지 세대",
+                            opacity=0.85,
                         )
                     )
                     fig1.add_trace(
                         go.Bar(
                             x=year_agg["연도"],
-                            y=year_agg["가스레인지수합"],
-                            name="가스레인지 보유 세대",
-                            opacity=0.8,
+                            y=year_agg["추정_인덕션세대수"],
+                            name="추정 인덕션 세대",
+                            opacity=0.85,
                         )
                     )
                     fig1.add_trace(
                         go.Scatter(
                             x=year_agg["연도"],
-                            y=year_agg["추정_인덕션세대수"],
-                            name="추정 인덕션 세대",
+                            y=year_agg["인덕션비중(%)"],
+                            name="인덕션 비중(%)",
                             mode="lines+markers",
                             yaxis="y2",
                         )
                     )
 
                     fig1.update_layout(
-                        title="연도별 전체세대 / 가스레인지세대 / 추정 인덕션세대",
+                        title="연도별 전체 청구전수 구성 및 인덕션 비중",
                         xaxis_title="연도",
-                        yaxis_title="세대 수",
+                        yaxis_title="세대 수 (전체 청구전)",
                         yaxis2=dict(
-                            title="추정 인덕션 세대",
+                            title="인덕션 비중(%)",
                             overlaying="y",
                             side="right",
                             showgrid=False,
                         ),
-                        barmode="group",
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                                    xanchor="right", x=1),
-                        margin=dict(l=40, r=40, t=60, b=40),
+                        barmode="stack",
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1,
+                        ),
+                        margin=dict(l=40, r=40, t=70, b=50),
                     )
                     st.plotly_chart(fig1, use_container_width=True)
 
+                # ─ 오른쪽 그래프: 사용량 + 감소량 (기존과 동일)
                 with c2:
+                    st.markdown("#### 연도별 사용량 및 인덕션에 따른 추정 감소량")
+
                     fig2 = go.Figure()
                     fig2.add_trace(
                         go.Bar(
@@ -896,14 +914,19 @@ else:
                         xaxis_title="연도",
                         yaxis_title=f"사용량 ({unit_label})",
                         barmode="stack",
-                        legend=dict(orientation="h", yanchor="bottom", y=1.02,
-                                    xanchor="right", x=1),
-                        margin=dict(l=40, r=20, t=60, b=40),
+                        legend=dict(
+                            orientation="h",
+                            yanchor="bottom",
+                            y=1.02,
+                            xanchor="right",
+                            x=1,
+                        ),
+                        margin=dict(l=40, r=20, t=70, b=50),
                     )
                     st.plotly_chart(fig2, use_container_width=True)
 
                 # ─────────────────────────────
-                # ②번 분석 내용에 2번째 그래프 스타일 + 증감률 큰 연도 배경 표현
+                # 연도별 인덕션 세대수 추이 (증감률 큰 연도 배경)
                 # ─────────────────────────────
                 st.markdown("#### 🔹 연도별 추정 인덕션 세대수 추이 (변동률이 큰 연도 배경 강조)")
 
@@ -966,7 +989,7 @@ else:
                                 line_width=0,
                             )
 
-                    # 정점/마지막 표시 (2번째 그래프 스타일 재사용)
+                    # 정점/마지막 표시
                     fig_trend.add_vline(x=peak_year, line_dash="dash", line_width=2)
                     fig_trend.add_vrect(
                         x0=peak_year,
@@ -1033,6 +1056,9 @@ else:
                 tbl["감소율(%)"] = tbl["감소율(%)"].apply(
                     lambda x: "" if pd.isna(x) else f"{float(x):.1f}"
                 )
+                tbl["인덕션비중(%)"] = tbl["인덕션비중(%)"].apply(
+                    lambda x: "" if pd.isna(x) else f"{float(x):.1f}"
+                )
 
                 st.dataframe(tbl, use_container_width=True, height=380)
 
@@ -1042,8 +1068,144 @@ else:
                     - **가스레인지당 평균사용량** = 실제 사용량 ÷ 가스레인지수  
                     - **전세대 가정 사용량** = 가스레인지당 평균사용량 × 전체청구전수  
                     - **추정 사용량 감소** = 전세대 가정 사용량 − 실제 사용량  
+                    - **인덕션 비중(%)** = 추정 인덕션 세대수 ÷ 전체청구전수 × 100  
                     """
                 )
+
+                # ─────────────────────────────
+                # 구·군별 인덕션 사용가구 비교 (세대수/비중) ─ 화면 하단
+                # ─────────────────────────────
+                st.markdown("---")
+                st.markdown("### ②-1. 구·군별 인덕션 사용가구 비교 (세대수 및 비중)")
+
+                year_sel_gu = st.selectbox(
+                    "구·군별 인덕션 비교 대상 연도 선택",
+                    options=year_agg["연도"].tolist(),
+                    index=len(year_agg["연도"]) - 1,
+                    key="year_sel_gu_induction",
+                )
+
+                dfu_year = dfu[dfu["연도"] == year_sel_gu]
+
+                if dfu_year.empty:
+                    st.info(f"{year_sel_gu}년에 해당하는 데이터가 없어.")
+                else:
+                    gu_house = (
+                        dfu_year.groupby(COL_DISTRICT, as_index=False)
+                        .agg(
+                            가스레인지수합=(COL_RANGE_CNT, "sum"),
+                            전체청구전수합=("전체청구전수", "sum"),
+                        )
+                    )
+                    gu_house["추정_인덕션세대수"] = (
+                        gu_house["전체청구전수합"] - gu_house["가스레인지수합"]
+                    )
+                    gu_house.loc[gu_house["추정_인덕션세대수"] < 0, "추정_인덕션세대수"] = 0
+                    gu_house["인덕션비중(%)"] = np.where(
+                        gu_house["전체청구전수합"] > 0,
+                        gu_house["추정_인덕션세대수"]
+                        / gu_house["전체청구전수합"]
+                        * 100,
+                        np.nan,
+                    ).round(1)
+
+                    # 인덕션 비중 기준 내림차순 정렬
+                    gu_house_sorted = gu_house.sort_values(
+                        "인덕션비중(%)", ascending=False
+                    )
+
+                    g1, g2 = st.columns([2, 1.6])
+
+                    # 스택 바 + 비중 라인
+                    with g1:
+                        fig_gu_stack = go.Figure()
+                        fig_gu_stack.add_trace(
+                            go.Bar(
+                                x=gu_house_sorted[COL_DISTRICT],
+                                y=gu_house_sorted["가스레인지수합"],
+                                name="가스레인지 세대",
+                                opacity=0.85,
+                            )
+                        )
+                        fig_gu_stack.add_trace(
+                            go.Bar(
+                                x=gu_house_sorted[COL_DISTRICT],
+                                y=gu_house_sorted["추정_인덕션세대수"],
+                                name="추정 인덕션 세대",
+                                opacity=0.85,
+                            )
+                        )
+                        fig_gu_stack.add_trace(
+                            go.Scatter(
+                                x=gu_house_sorted[COL_DISTRICT],
+                                y=gu_house_sorted["인덕션비중(%)"],
+                                name="인덕션 비중(%)",
+                                mode="lines+markers",
+                                yaxis="y2",
+                            )
+                        )
+
+                        fig_gu_stack.update_layout(
+                            title=f"{year_sel_gu}년 구·군별 전체세대 구성 및 인덕션 비중",
+                            xaxis_title="구·군",
+                            yaxis_title="세대 수",
+                            yaxis2=dict(
+                                title="인덕션 비중(%)",
+                                overlaying="y",
+                                side="right",
+                                showgrid=False,
+                            ),
+                            barmode="stack",
+                            legend=dict(
+                                orientation="h",
+                                yanchor="bottom",
+                                y=1.02,
+                                xanchor="right",
+                                x=1,
+                            ),
+                            margin=dict(l=40, r=40, t=70, b=70),
+                        )
+                        st.plotly_chart(fig_gu_stack, use_container_width=True)
+
+                    # 인덕션 비중 순위 (가로 막대)
+                    with g2:
+                        fig_gu_share = px.bar(
+                            gu_house_sorted,
+                            x="인덕션비중(%)",
+                            y=COL_DISTRICT,
+                            orientation="h",
+                            text="인덕션비중(%)",
+                            title=f"{year_sel_gu}년 구·군별 인덕션 비중(%) 순위",
+                        )
+                        fig_gu_share.update_layout(
+                            xaxis_title="인덕션 비중(%)",
+                            yaxis_title="구·군",
+                            margin=dict(l=40, r=20, t=70, b=40),
+                        )
+                        fig_gu_share.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                        st.plotly_chart(fig_gu_share, use_container_width=True)
+
+                    # 표 (세대수 중심)
+                    st.markdown("#### 구·군별 인덕션 사용가구 요약 (세대수 기준)")
+                    df_show_gu = gu_house_sorted.copy()
+                    df_show_gu["가스레인지수합"] = df_show_gu["가스레인지수합"].apply(
+                        lambda x: f"{int(x):,}"
+                    )
+                    df_show_gu["전체청구전수합"] = df_show_gu["전체청구전수합"].apply(
+                        lambda x: f"{int(x):,}"
+                    )
+                    df_show_gu["추정_인덕션세대수"] = df_show_gu["추정_인덕션세대수"].apply(
+                        lambda x: f"{int(x):,}"
+                    )
+                    df_show_gu["인덕션비중(%)"] = df_show_gu["인덕션비중(%)"].apply(
+                        lambda x: "" if pd.isna(x) else f"{float(x):.1f}"
+                    )
+
+                    st.dataframe(
+                        df_show_gu.set_index(COL_DISTRICT),
+                        use_container_width=True,
+                        height=320,
+                    )
 
             # ─────────────────────────────
             # ② 시군구·용도별 인덕션/감소 추정
@@ -1078,7 +1240,11 @@ else:
                 grp["추정_사용량감소"] = grp["추정_사용량감소"].clip(lower=0)
 
                 year_options = sorted(grp["연도"].unique())
-                year_sel = st.selectbox("상세 분석 연도 선택", options=year_options, index=len(year_options)-1)
+                year_sel = st.selectbox(
+                    "상세 분석 연도 선택",
+                    options=year_options,
+                    index=len(year_options) - 1,
+                )
 
                 grp_year = grp[grp["연도"] == year_sel]
 
