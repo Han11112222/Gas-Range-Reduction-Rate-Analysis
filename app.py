@@ -1,6 +1,9 @@
 # app.py ─ 가정용 가스레인지 감소 분석 (대구 + 경산)
 # - 분석1(인덕션 사용량 분석 1st): ① 월별·연도별 추이  /  ② 대구시 8개 구·군 + 경산시 감소량 지도
 # - 분석2(인덕션 사용량 분석 2nd): 인덕션(비가스렌지) 추정 + 사용량 감소 추정 (연도별 / 시군구·용도별)
+#
+# ※ 인덕션 추정 가정(업데이트)
+#   - 추정 인덕션 세대수 = [총청구계량기수 시트의 전수] − [계량기_가스렌지연결 시트의 전수]
 
 from pathlib import Path
 import json
@@ -28,8 +31,9 @@ BASE_DIR = Path(__file__).parent
 # 분석1에서 사용하던 기존 파일
 DATA_PATH = BASE_DIR / "(ver2)가정용_가스레인지_사용유무.xlsx"
 
-# 사용량·전체청구전수가 포함된 새 파일 (2015.01~2024.12)
-DATA_PATH_USAGE = BASE_DIR / "(ver2)가정용_가스레인지_사용유무(201501_202412)_사용량추가.xlsx"
+# 사용량·전체청구전수가 포함된 새 파일 (2015.01~2024.12) ─ v3(우선), v2(백업)
+DATA_PATH_USAGE_V3 = BASE_DIR / "(ver3)가정용_가스레인지_사용유무(201501_202412)_정보추가.xlsx"
+DATA_PATH_USAGE_V2 = BASE_DIR / "(ver2)가정용_가스레인지_사용유무(201501_202412)_사용량추가.xlsx"
 
 # GeoJSON
 GEO_PATH = BASE_DIR / "data" / "daegu_gyeongsan_sgg.geojson"
@@ -98,77 +102,215 @@ def load_data() -> pd.DataFrame:
 
 # ─────────────────────────────────────
 # 데이터 로딩 (분석2: 사용량·전체청구전수 포함 파일)
+#   - v3: 여러 시트를 이용해 '전체청구전수', '가스렌지연결_청구전수' 계산
+#   - v2: 이전 방식(단일 시트) 백업
 # ─────────────────────────────────────
 @st.cache_data
 def load_data_with_usage():
     """
     사용량/전체청구전수를 포함한 파일 로딩.
-    - 컬럼명을 분석1에서 쓰는 공통 이름으로 맞추고
-    - '사용량_기준' (MJ 또는 m3), '전체청구전수' 등을 숫자로 변환해서 돌려줌.
+    v3 파일이 존재하면 다음 논리를 사용:
+      - 가스렌지수 시트: 기본 가스레인지 수 + 사용량
+      - 계량기_가스렌지연결 시트: 가스레인지에 연결된 청구 계량기 수
+      - 총청구계량기수 시트: 전체 청구 계량기 수
+      → 추정 인덕션 세대수 = 총청구계량기수 − 계량기_가스렌지연결
+    v3가 없고 v2만 있을 때는 기존 방식(전체청구전수 − 가스레인지수)을 사용.
     """
-    if not DATA_PATH_USAGE.exists():
-        return None
+    # ───────────── v3 우선 사용 ─────────────
+    if DATA_PATH_USAGE_V3.exists():
+        # 1) 가스렌지수 시트 ─ 기본 틀 + 사용량
+        df_gas = pd.read_excel(DATA_PATH_USAGE_V3, sheet_name="가스렌지수")
 
-    df = pd.read_excel(DATA_PATH_USAGE)
+        rename_main = {}
+        if "년월" in df_gas.columns:
+            rename_main["년월"] = COL_YEAR_MONTH
+        if "구분" in df_gas.columns:
+            rename_main["구분"] = COL_YEAR_MONTH
+        if "상품명" in df_gas.columns:
+            rename_main["상품명"] = COL_PRODUCT
+        if "상품" in df_gas.columns:
+            rename_main["상품"] = COL_PRODUCT
+        if "용도" in df_gas.columns:
+            rename_main["용도"] = COL_USAGE
+        if "시군구" in df_gas.columns:
+            rename_main["시군구"] = COL_DISTRICT
+        if "가스렌지수" in df_gas.columns:
+            rename_main["가스렌지수"] = COL_RANGE_CNT
 
-    # 새 파일의 실제 컬럼명을 공통 컬럼명으로 매핑
-    rename_map = {}
-    if "년월" in df.columns:
-        rename_map["년월"] = COL_YEAR_MONTH
-    if "상품명" in df.columns:
-        rename_map["상품명"] = COL_PRODUCT
-    if "가스렌지수" in df.columns:
-        rename_map["가스렌지수"] = COL_RANGE_CNT
+        df_gas = df_gas.rename(columns=rename_main)
 
-    df = df.rename(columns=rename_map)
+        # 기본 문자열/날짜 컬럼 정리
+        df_gas[COL_YEAR_MONTH] = df_gas[COL_YEAR_MONTH].astype(str).str.strip()
+        df_gas["연도"] = df_gas[COL_YEAR_MONTH].str[:4].astype(int)
+        df_gas["월"] = df_gas[COL_YEAR_MONTH].str[4:6].astype(int)
 
-    # 구분 → 연도, 월
-    df[COL_YEAR_MONTH] = df[COL_YEAR_MONTH].astype(str).str.strip()
-    df["연도"] = df[COL_YEAR_MONTH].str[:4].astype(int)
-    df["월"] = df[COL_YEAR_MONTH].str[4:6].astype(int)
+        for c in [COL_USAGE, COL_PRODUCT, COL_DISTRICT]:
+            if c in df_gas.columns:
+                df_gas[c] = df_gas[c].astype(str).str.strip()
 
-    # 기본 텍스트 정리
-    for c in [COL_USAGE, COL_PRODUCT, COL_DISTRICT]:
-        if c in df.columns:
-            df[c] = df[c].astype(str).str.strip()
+        # 가스레인지 수
+        df_gas[COL_RANGE_CNT] = _to_int_series(df_gas[COL_RANGE_CNT])
 
-    # 가스레인지 수
-    df[COL_RANGE_CNT] = _to_int_series(df[COL_RANGE_CNT])
+        # 사용량(m3 / MJ) 컬럼 찾기
+        col_m3 = next((c for c in df_gas.columns if "사용량" in c and "3" in c), None)
+        col_mj = next(
+            (c for c in df_gas.columns if "사용량" in c and ("MJ" in c or "mj" in c or "Mj" in c)),
+            None,
+        )
 
-    # 사용량(m3), 사용량(MJ) 컬럼 찾기
-    col_m3 = next((c for c in df.columns if "사용량" in c and "3" in c), None)
-    col_mj = next(
-        (c for c in df.columns if "사용량" in c and ("MJ" in c or "mj" in c or "Mj" in c)),
-        None,
-    )
+        if col_m3 is not None:
+            df_gas["사용량_m3"] = pd.to_numeric(
+                df_gas[col_m3].astype(str).str.replace(",", "", regex=False),
+                errors="coerce",
+            ).fillna(0.0)
 
-    if col_m3 is not None:
-        df["사용량_m3"] = pd.to_numeric(
-            df[col_m3].astype(str).str.replace(",", "", regex=False),
-            errors="coerce",
-        ).fillna(0.0)
+        if col_mj is not None:
+            df_gas["사용량_MJ"] = pd.to_numeric(
+                df_gas[col_mj].astype(str).str.replace(",", "", regex=False),
+                errors="coerce",
+            ).fillna(0.0)
 
-    if col_mj is not None:
-        df["사용량_MJ"] = pd.to_numeric(
-            df[col_mj].astype(str).str.replace(",", "", regex=False),
-            errors="coerce",
-        ).fillna(0.0)
+        if "사용량_MJ" in df_gas.columns:
+            df_gas["사용량_기준"] = df_gas["사용량_MJ"]
+        elif "사용량_m3" in df_gas.columns:
+            df_gas["사용량_기준"] = df_gas["사용량_m3"]
+        else:
+            df_gas["사용량_기준"] = np.nan
 
-    # 기준 사용량 컬럼(에너지 관점으로는 MJ 우선, 없으면 m3)
-    if "사용량_MJ" in df.columns:
-        df["사용량_기준"] = df["사용량_MJ"]
-    elif "사용량_m3" in df.columns:
-        df["사용량_기준"] = df["사용량_m3"]
-    else:
-        df["사용량_기준"] = np.nan
+        # 2) 계량기_가스렌지연결 시트 ─ 가스레인지 연결 청구전수
+        df_conn = pd.read_excel(DATA_PATH_USAGE_V3, sheet_name="계량기_가스렌지연결")
 
-    # 전체청구전수 숫자 변환
-    if "전체청구전수" in df.columns:
-        df["전체청구전수"] = _to_int_series(df["전체청구전수"])
-    else:
-        df["전체청구전수"] = np.nan
+        rename_conn = {}
+        if "년월" in df_conn.columns:
+            rename_conn["년월"] = COL_YEAR_MONTH
+        if "구분" in df_conn.columns:
+            rename_conn["구분"] = COL_YEAR_MONTH
+        if "상품명" in df_conn.columns:
+            rename_conn["상품명"] = COL_PRODUCT
+        if "상품" in df_conn.columns:
+            rename_conn["상품"] = COL_PRODUCT
+        if "용도" in df_conn.columns:
+            rename_conn["용도"] = COL_USAGE
+        if "시군구" in df_conn.columns:
+            rename_conn["시군구"] = COL_DISTRICT
+        if "전수" in df_conn.columns:
+            rename_conn["전수"] = "가스렌지연결_청구전수"
 
-    return df
+        df_conn = df_conn.rename(columns=rename_conn)
+        key_cols = [COL_YEAR_MONTH, COL_USAGE, COL_PRODUCT, COL_DISTRICT]
+
+        for c in key_cols:
+            df_conn[c] = df_conn[c].astype(str).str.strip()
+
+        df_conn["가스렌지연결_청구전수"] = _to_int_series(df_conn["가스렌지연결_청구전수"])
+        df_conn_agg = (
+            df_conn.groupby(key_cols, as_index=False)["가스렌지연결_청구전수"]
+            .sum()
+        )
+
+        # 3) 총청구계량기수 시트 ─ 전체 청구전수
+        df_total = pd.read_excel(DATA_PATH_USAGE_V3, sheet_name="총청구계량기수")
+
+        rename_total = {}
+        if "년월" in df_total.columns:
+            rename_total["년월"] = COL_YEAR_MONTH
+        if "구분" in df_total.columns:
+            rename_total["구분"] = COL_YEAR_MONTH
+        if "상품명" in df_total.columns:
+            rename_total["상품명"] = COL_PRODUCT
+        if "상품" in df_total.columns:
+            rename_total["상품"] = COL_PRODUCT
+        if "용도" in df_total.columns:
+            rename_total["용도"] = COL_USAGE
+        if "시군구" in df_total.columns:
+            rename_total["시군구"] = COL_DISTRICT
+        if "전수" in df_total.columns:
+            rename_total["전수"] = "전체청구전수"
+
+        df_total = df_total.rename(columns=rename_total)
+
+        for c in key_cols:
+            df_total[c] = df_total[c].astype(str).str.strip()
+
+        df_total["전체청구전수"] = _to_int_series(df_total["전체청구전수"])
+        df_total_agg = (
+            df_total.groupby(key_cols, as_index=False)["전체청구전수"]
+            .sum()
+        )
+
+        # 4) 메인 df에 병합
+        for c in key_cols:
+            df_gas[c] = df_gas[c].astype(str).str.strip()
+
+        df = df_gas.merge(df_total_agg, on=key_cols, how="left")
+        df = df.merge(df_conn_agg, on=key_cols, how="left")
+
+        df["전체청구전수"] = df["전체청구전수"].fillna(0).astype(int)
+        df["가스렌지연결_청구전수"] = df["가스렌지연결_청구전수"].fillna(0).astype(int)
+
+        return df
+
+    # ───────────── v2 백업 방식 ─────────────
+    if DATA_PATH_USAGE_V2.exists():
+        df = pd.read_excel(DATA_PATH_USAGE_V2)
+
+        rename_map = {}
+        if "년월" in df.columns:
+            rename_map["년월"] = COL_YEAR_MONTH
+        if "상품명" in df.columns:
+            rename_map["상품명"] = COL_PRODUCT
+        if "가스렌지수" in df.columns:
+            rename_map["가스렌지수"] = COL_RANGE_CNT
+
+        df = df.rename(columns=rename_map)
+
+        df[COL_YEAR_MONTH] = df[COL_YEAR_MONTH].astype(str).str.strip()
+        df["연도"] = df[COL_YEAR_MONTH].str[:4].astype(int)
+        df["월"] = df[COL_YEAR_MONTH].str[4:6].astype(int)
+
+        for c in [COL_USAGE, COL_PRODUCT, COL_DISTRICT]:
+            if c in df.columns:
+                df[c] = df[c].astype(str).str.strip()
+
+        df[COL_RANGE_CNT] = _to_int_series(df[COL_RANGE_CNT])
+
+        col_m3 = next((c for c in df.columns if "사용량" in c and "3" in c), None)
+        col_mj = next(
+            (c for c in df.columns if "사용량" in c and ("MJ" in c or "mj" in c or "Mj" in c)),
+            None,
+        )
+
+        if col_m3 is not None:
+            df["사용량_m3"] = pd.to_numeric(
+                df[col_m3].astype(str).str.replace(",", "", regex=False),
+                errors="coerce",
+            ).fillna(0.0)
+
+        if col_mj is not None:
+            df["사용량_MJ"] = pd.to_numeric(
+                df[col_mj].astype(str).str.replace(",", "", regex=False),
+                errors="coerce",
+            ).fillna(0.0)
+
+        if "사용량_MJ" in df.columns:
+            df["사용량_기준"] = df["사용량_MJ"]
+        elif "사용량_m3" in df.columns:
+            df["사용량_기준"] = df["사용량_m3"]
+        else:
+            df["사용량_기준"] = np.nan
+
+        if "전체청구전수" in df.columns:
+            df["전체청구전수"] = _to_int_series(df["전체청구전수"])
+        else:
+            df["전체청구전수"] = np.nan
+
+        # v2에는 '가스렌지연결_청구전수' 개념이 없으므로 NaN
+        df["가스렌지연결_청구전수"] = np.nan
+
+        return df
+
+    # 둘 다 없으면 None
+    return None
 
 
 # ─────────────────────────────────────
@@ -754,7 +896,8 @@ else:
     if df_usage_raw is None:
         st.warning(
             "사용량·전체청구전수를 포함한 파일을 찾지 못했어.  \n"
-            "`(ver2)가정용_가스레인지_사용유무(201501_202412)_사용량추가.xlsx` "
+            "`(ver3)가정용_가스레인지_사용유무(201501_202412)_정보추가.xlsx` "
+            "또는 `(ver2)가정용_가스레인지_사용유무(201501_202412)_사용량추가.xlsx` "
             "파일이 같은 폴더에 있는지 확인해줘."
         )
     else:
@@ -782,26 +925,39 @@ else:
                 st.markdown("### ① 연도별 인덕션 사용 및 사용량 감소 추정")
 
                 # 연도별 집계
+                agg_dict = {
+                    "가스레인지수합": (COL_RANGE_CNT, "sum"),
+                    "전체청구전수합": ("전체청구전수", "sum"),
+                    "사용량합": ("사용량_기준", "sum"),
+                }
+                # v3인 경우: 가스렌지 연결 청구전수 집계
+                if "가스렌지연결_청구전수" in dfu.columns:
+                    agg_dict["가스렌지연결_청구전수합"] = ("가스렌지연결_청구전수", "sum")
+
                 year_agg = (
                     dfu.groupby("연도", as_index=False)
-                    .agg(
-                        가스레인지수합=(COL_RANGE_CNT, "sum"),
-                        전체청구전수합=("전체청구전수", "sum"),
-                        사용량합=("사용량_기준", "sum"),
-                    )
+                    .agg(**agg_dict)
                     .sort_values("연도")
                 )
 
-                # 인덕션(비가스레인지) 추정 세대 = 전체청구전수 - 가스레인지수
-                year_agg["추정_인덕션세대수"] = (
-                    year_agg["전체청구전수합"] - year_agg["가스레인지수합"]
-                )
-                year_agg.loc[year_agg["추정_인덕션세대수"] < 0, "추정_인덕션세대수"] = 0
+                # 인덕션(비가스레인지) 추정 세대
+                if "가스렌지연결_청구전수합" in year_agg.columns:
+                    base_induction = (
+                        year_agg["전체청구전수합"] - year_agg["가스렌지연결_청구전수합"]
+                    )
+                else:
+                    # v2 백업: 전체청구전수 − 가스레인지수
+                    base_induction = (
+                        year_agg["전체청구전수합"] - year_agg["가스레인지수합"]
+                    )
+                year_agg["추정_인덕션세대수"] = base_induction.clip(lower=0)
 
                 # 인덕션 비중
                 year_agg["인덕션비중(%)"] = np.where(
                     year_agg["전체청구전수합"] > 0,
-                    year_agg["추정_인덕션세대수"] / year_agg["전체청구전수합"] * 100,
+                    year_agg["추정_인덕션세대수"]
+                    / year_agg["전체청구전수합"]
+                    * 100,
                     np.nan,
                 ).round(1)
 
@@ -888,7 +1044,7 @@ else:
                     )
                     st.plotly_chart(fig1, use_container_width=True)
 
-                # ─ 오른쪽 그래프: 사용량 + 감소량 (기존과 동일)
+                # ─ 오른쪽 그래프: 사용량 + 감소량
                 with c2:
                     st.markdown("#### 연도별 사용량 및 인덕션에 따른 추정 감소량")
 
@@ -932,10 +1088,8 @@ else:
 
                 trend = year_agg[["연도", "추정_인덕션세대수"]].copy()
                 if len(trend) >= 2:
-                    # 연도별 증감률 계산
                     trend["증감률(%)"] = trend["추정_인덕션세대수"].pct_change() * 100
 
-                    # 정점 연도
                     peak_idx = trend["추정_인덕션세대수"].idxmax()
                     peak_year = int(trend.loc[peak_idx, "연도"])
                     peak_val = float(trend.loc[peak_idx, "추정_인덕션세대수"])
@@ -969,7 +1123,6 @@ else:
                         )
                     )
 
-                    # 증감률이 큰 연도(상위 30% 절대값)를 배경으로 표시
                     abs_changes = trend["증감률(%)"].dropna().abs()
                     if len(abs_changes) > 0:
                         threshold = np.percentile(abs_changes, 70)
@@ -978,7 +1131,6 @@ else:
                             rate = row["증감률(%)"]
                             if pd.isna(rate) or abs(rate) < threshold:
                                 continue
-                            # 증감 방향에 따라 배경색 구분
                             color = "LightSkyBlue" if rate > 0 else "MistyRose"
                             fig_trend.add_vrect(
                                 x0=year - 0.5,
@@ -989,7 +1141,6 @@ else:
                                 line_width=0,
                             )
 
-                    # 정점/마지막 표시
                     fig_trend.add_vline(x=peak_year, line_dash="dash", line_width=2)
                     fig_trend.add_vrect(
                         x0=peak_year,
@@ -1059,12 +1210,17 @@ else:
                 tbl["인덕션비중(%)"] = tbl["인덕션비중(%)"].apply(
                     lambda x: "" if pd.isna(x) else f"{float(x):.1f}"
                 )
+                if "가스렌지연결_청구전수합" in tbl.columns:
+                    tbl["가스렌지연결_청구전수합"] = tbl["가스렌지연결_청구전수합"].apply(
+                        lambda x: f"{int(x):,}"
+                    )
 
                 st.dataframe(tbl, use_container_width=True, height=380)
 
                 st.markdown(
                     """
-                    - **추정 인덕션 세대수** = 전체청구전수 − 가스레인지수  
+                    - **추정 인덕션 세대수** (v3 기준) = 총청구계량기수 − 가스렌지연결 청구계량기수  
+                    - v2 파일만 있을 때는 **추정 인덕션 세대수 = 전체청구전수 − 가스레인지수** 로 계산됨  
                     - **가스레인지당 평균사용량** = 실제 사용량 ÷ 가스레인지수  
                     - **전세대 가정 사용량** = 가스레인지당 평균사용량 × 전체청구전수  
                     - **추정 사용량 감소** = 전세대 가정 사용량 − 실제 사용량  
@@ -1073,7 +1229,7 @@ else:
                 )
 
                 # ─────────────────────────────
-                # 구·군별 인덕션 사용가구 비교 (세대수/비중) ─ 화면 하단
+                # 구·군별 인덕션 사용가구 비교 (세대수/비중)
                 # ─────────────────────────────
                 st.markdown("---")
                 st.markdown("### ②-1. 구·군별 인덕션 사용가구 비교 (세대수 및 비중)")
@@ -1090,17 +1246,29 @@ else:
                 if dfu_year.empty:
                     st.info(f"{year_sel_gu}년에 해당하는 데이터가 없어.")
                 else:
+                    agg_args = {
+                        "가스레인지수합": (COL_RANGE_CNT, "sum"),
+                        "전체청구전수합": ("전체청구전수", "sum"),
+                    }
+                    if "가스렌지연결_청구전수" in dfu_year.columns:
+                        agg_args["가스렌지연결_청구전수합"] = ("가스렌지연결_청구전수", "sum")
+
                     gu_house = (
                         dfu_year.groupby(COL_DISTRICT, as_index=False)
-                        .agg(
-                            가스레인지수합=(COL_RANGE_CNT, "sum"),
-                            전체청구전수합=("전체청구전수", "sum"),
+                        .agg(**agg_args)
+                    )
+
+                    if "가스렌지연결_청구전수합" in gu_house.columns:
+                        base_induction_gu = (
+                            gu_house["전체청구전수합"]
+                            - gu_house["가스렌지연결_청구전수합"]
                         )
-                    )
-                    gu_house["추정_인덕션세대수"] = (
-                        gu_house["전체청구전수합"] - gu_house["가스레인지수합"]
-                    )
-                    gu_house.loc[gu_house["추정_인덕션세대수"] < 0, "추정_인덕션세대수"] = 0
+                    else:
+                        base_induction_gu = (
+                            gu_house["전체청구전수합"] - gu_house["가스레인지수합"]
+                        )
+
+                    gu_house["추정_인덕션세대수"] = base_induction_gu.clip(lower=0)
                     gu_house["인덕션비중(%)"] = np.where(
                         gu_house["전체청구전수합"] > 0,
                         gu_house["추정_인덕션세대수"]
@@ -1109,7 +1277,6 @@ else:
                         np.nan,
                     ).round(1)
 
-                    # 인덕션 비중 기준 내림차순 정렬
                     gu_house_sorted = gu_house.sort_values(
                         "인덕션비중(%)", ascending=False
                     )
@@ -1182,7 +1349,9 @@ else:
                             yaxis_title="구·군",
                             margin=dict(l=40, r=20, t=70, b=40),
                         )
-                        fig_gu_share.update_traces(texttemplate="%{text:.1f}%", textposition="outside")
+                        fig_gu_share.update_traces(
+                            texttemplate="%{text:.1f}%", textposition="outside"
+                        )
                         st.plotly_chart(fig_gu_share, use_container_width=True)
 
                     # 표 (세대수 중심)
@@ -1200,6 +1369,10 @@ else:
                     df_show_gu["인덕션비중(%)"] = df_show_gu["인덕션비중(%)"].apply(
                         lambda x: "" if pd.isna(x) else f"{float(x):.1f}"
                     )
+                    if "가스렌지연결_청구전수합" in df_show_gu.columns:
+                        df_show_gu["가스렌지연결_청구전수합"] = df_show_gu[
+                            "가스렌지연결_청구전수합"
+                        ].apply(lambda x: f"{int(x):,}")
 
                     st.dataframe(
                         df_show_gu.set_index(COL_DISTRICT),
@@ -1213,18 +1386,29 @@ else:
             with tab_b:
                 st.markdown("### ② 시군구·용도별 인덕션 및 사용량 감소 추정")
 
+                agg_dict2 = {
+                    "가스레인지수합": (COL_RANGE_CNT, "sum"),
+                    "전체청구전수합": ("전체청구전수", "sum"),
+                    "사용량합": ("사용량_기준", "sum"),
+                }
+                if "가스렌지연결_청구전수" in dfu.columns:
+                    agg_dict2["가스렌지연결_청구전수합"] = ("가스렌지연결_청구전수", "sum")
+
                 grp = (
                     dfu.groupby(["연도", COL_DISTRICT, COL_USAGE], as_index=False)
-                    .agg(
-                        가스레인지수합=(COL_RANGE_CNT, "sum"),
-                        전체청구전수합=("전체청구전수", "sum"),
-                        사용량합=("사용량_기준", "sum"),
+                    .agg(**agg_dict2)
+                )
+
+                if "가스렌지연결_청구전수합" in grp.columns:
+                    base_induction_grp = (
+                        grp["전체청구전수합"] - grp["가스렌지연결_청구전수합"]
                     )
-                )
-                grp["추정_인덕션세대수"] = (
-                    grp["전체청구전수합"] - grp["가스레인지수합"]
-                )
-                grp.loc[grp["추정_인덕션세대수"] < 0, "추정_인덕션세대수"] = 0
+                else:
+                    base_induction_grp = (
+                        grp["전체청구전수합"] - grp["가스레인지수합"]
+                    )
+
+                grp["추정_인덕션세대수"] = base_induction_grp.clip(lower=0)
 
                 grp["가스레인지당_평균사용량"] = np.where(
                     grp["가스레인지수합"] > 0,
@@ -1336,3 +1520,38 @@ else:
                     use_container_width=True,
                     height=300,
                 )
+
+                # ─────────────────────────────
+                # ③ 인덕션 비중 연도×시군구 히트맵 (추세용, 화면 최하단)
+                # ─────────────────────────────
+                st.markdown("---")
+                st.markdown("### ③ 인덕션 비중 연도 × 시군구 히트맵 (추세 파악용)")
+
+                heat_ind = (
+                    grp.groupby(["연도", COL_DISTRICT], as_index=False)
+                    .agg(
+                        전체청구전수합=("전체청구전수합", "sum"),
+                        인덕션세대합=("추정_인덕션세대수", "sum"),
+                    )
+                )
+                heat_ind["인덕션비중(%)"] = np.where(
+                    heat_ind["전체청구전수합"] > 0,
+                    heat_ind["인덕션세대합"]
+                    / heat_ind["전체청구전수합"]
+                    * 100,
+                    np.nan,
+                )
+
+                pivot_ind = heat_ind.pivot(
+                    index="연도", columns=COL_DISTRICT, values="인덕션비중(%)"
+                ).sort_index()
+
+                fig_ind_heat = px.imshow(
+                    pivot_ind,
+                    labels=dict(x="시군구", y="연도", color="인덕션비중(%)"),
+                    aspect="auto",
+                    title="연도 × 시군구 인덕션 비중(%) 히트맵",
+                    color_continuous_scale="Blues",
+                )
+                fig_ind_heat.update_xaxes(side="top")
+                st.plotly_chart(fig_ind_heat, use_container_width=True)
