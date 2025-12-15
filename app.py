@@ -14,12 +14,21 @@ import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
 
-# ✅ [지도 시각화 수정용 추가 import] ---------------
-import folium
-from streamlit_folium import st_folium
-import branca.colormap as cm
-from copy import deepcopy
-# ---------------------------------------------------
+# ─────────────────────────────────────
+# [지도 안정화용] folium + streamlit-folium (있으면 사용, 없으면 Plotly로 자동 백업)
+# ─────────────────────────────────────
+FOLIUM_OK = True
+FOLIUM_ERR = ""
+try:
+    import folium
+    from streamlit_folium import st_folium
+    from branca.colormap import LinearColormap
+except Exception as e:
+    FOLIUM_OK = False
+    FOLIUM_ERR = str(e)
+    folium = None
+    st_folium = None
+    LinearColormap = None
 
 
 # ─────────────────────────────────────
@@ -43,14 +52,14 @@ DATA_PATH = BASE_DIR / "(ver2)가정용_가스레인지_사용유무.xlsx"
 DATA_PATH_USAGE_V3 = BASE_DIR / "(ver3)가정용_가스레인지_사용유무(201501_202412)_정보추가.xlsx"
 DATA_PATH_USAGE_V2 = BASE_DIR / "(ver2)가정용_가스레인지_사용유무(201501_202412)_사용량추가.xlsx"
 
-# GeoJSON
+# GeoJSON (네가 올린 구조: /data/daegu_gyeongsan_sgg.geojson)
 GEO_PATH = BASE_DIR / "data" / "daegu_gyeongsan_sgg.geojson"
 
 # 엑셀 공통 컬럼 이름(분석1, 분석2 모두 이 이름으로 맞춰 사용)
-COL_YEAR_MONTH = "구분"        # 201501, 201502 …
-COL_USAGE = "용도"             # 단독주택 / 공동주택
-COL_PRODUCT = "상품"           # 취사용 / 취사난방용 / 개별난방용
-COL_DISTRICT = "시군구"        # 중구 / 동구 / 경산시 …
+COL_YEAR_MONTH = "구분"         # 201501, 201502 …
+COL_USAGE = "용도"              # 단독주택 / 공동주택
+COL_PRODUCT = "상품"            # 취사용 / 취사난방용 / 개별난방용
+COL_DISTRICT = "시군구"         # 중구 / 동구 / 경산시 …
 COL_RANGE_CNT = "가스레인지수"   # 가스레인지 수
 
 # 대구 + 경산 시군구(표/지도 정렬 기준)
@@ -339,7 +348,6 @@ def load_geojson():
 
     props_keys = list(features[0]["properties"].keys())
 
-    # 각 속성 필드별로 TARGET_SIGUNGU(중구, 동구, …)가 값 안에 몇 개나 들어 있는지 스코어 계산
     best_field = None
     best_score = -1
     target_set = set(TARGET_SIGUNGU)
@@ -355,6 +363,184 @@ def load_geojson():
             best_field = key
 
     return gj, best_field
+
+
+# ─────────────────────────────────────
+# [지도용] 감소량 테이블 만들기
+# ─────────────────────────────────────
+@st.cache_data
+def build_map_table_cached(df_raw: pd.DataFrame,
+                           usage_sel: tuple,
+                           product_sel: tuple,
+                           base_year: int,
+                           comp_year: int) -> pd.DataFrame:
+    df_map = df_raw.copy()
+    df_map = df_map[df_map[COL_USAGE].isin(list(usage_sel))]
+    df_map = df_map[df_map[COL_PRODUCT].isin(list(product_sel))]
+    df_map = df_map[df_map[COL_DISTRICT].isin(TARGET_SIGUNGU)]
+
+    map_df = df_map[df_map["연도"].isin([base_year, comp_year])]
+    if map_df.empty:
+        return pd.DataFrame()
+
+    grouped = (
+        map_df.groupby(["연도", COL_DISTRICT], as_index=False)[COL_RANGE_CNT]
+        .sum()
+    )
+
+    pivot_map = (
+        grouped
+        .pivot(index=COL_DISTRICT, columns="연도", values=COL_RANGE_CNT)
+        .reindex(index=TARGET_SIGUNGU)
+        .fillna(0)
+    )
+
+    if base_year not in pivot_map.columns:
+        pivot_map[base_year] = 0
+    if comp_year not in pivot_map.columns:
+        pivot_map[comp_year] = 0
+
+    pivot_map["감소량(기준-비교)"] = pivot_map[base_year] - pivot_map[comp_year]
+    pivot_map["감소율(%)"] = np.where(
+        pivot_map[base_year] > 0,
+        pivot_map["감소량(기준-비교)"] / pivot_map[base_year] * 100,
+        np.nan,
+    )
+    pivot_map["감소율(%)"] = pivot_map["감소율(%)"].round(1)
+
+    map_table = pivot_map.reset_index().rename(
+        columns={
+            COL_DISTRICT: "시군구",
+            base_year: f"{base_year}년 가스레인지 수(연간합계)",
+            comp_year: f"{comp_year}년 가스레인지 수(연간합계)",
+        }
+    )
+    return map_table
+
+
+def _attach_geo_key(map_table: pd.DataFrame, geojson: dict, GEO_NAME_FIELD: str) -> pd.DataFrame:
+    """map_table에 geo_key를 붙여서 GeoJSON feature와 매칭되게 만든다."""
+    mt = map_table.copy()
+    geo_names = [
+        str(f["properties"].get(GEO_NAME_FIELD, ""))
+        for f in geojson.get("features", [])
+    ]
+
+    def find_geo_name(d):
+        for name in geo_names:
+            if d in name:
+                return name
+        return d
+
+    mt["geo_key"] = mt["시군구"].apply(find_geo_name)
+    return mt
+
+
+def build_folium_choropleth(map_table: pd.DataFrame, geojson: dict, GEO_NAME_FIELD: str,
+                            base_year: int, comp_year: int):
+    """
+    folium Choropleth + GeoJson 툴팁. (returned_objects=[]로 불필요 리로드 최소화)
+    """
+    center = [35.8714, 128.6014]
+    m = folium.Map(location=center, zoom_start=10, tiles="CartoDB positron")
+
+    vcol = "감소량(기준-비교)"
+    vals = map_table[vcol].astype(float).to_list()
+    vmin = float(np.nanmin(vals)) if len(vals) else 0.0
+    vmax = float(np.nanmax(vals)) if len(vals) else 0.0
+    if vmin == vmax:
+        vmin -= 1.0
+        vmax += 1.0
+
+    # 0을 가운데로 보고 싶으면 (감소/증가) 대칭 범위로 맞춤
+    absmax = max(abs(vmin), abs(vmax))
+    vmin2, vmax2 = -absmax, absmax
+
+    cmap = LinearColormap(["#2c7bb6", "#ffffbf", "#d7191c"], vmin=vmin2, vmax=vmax2)
+    cmap.caption = f"감소량(기준-비교) : {base_year}년 - {comp_year}년"
+    cmap.add_to(m)
+
+    row_by_key = {r["geo_key"]: r for _, r in map_table.iterrows()}
+
+    def style_function(feature):
+        key = str(feature["properties"].get(GEO_NAME_FIELD, ""))
+        row = row_by_key.get(key, None)
+        if row is None:
+            return {"fillOpacity": 0.15, "weight": 0.8, "color": "white", "fillColor": "#999999"}
+
+        v = row.get(vcol, np.nan)
+        try:
+            v = float(v)
+        except Exception:
+            v = np.nan
+
+        return {
+            "fillOpacity": 0.75,
+            "weight": 0.8,
+            "color": "white",
+            "fillColor": cmap(v) if not np.isnan(v) else "#999999",
+        }
+
+    tooltip = folium.GeoJsonTooltip(
+        fields=[GEO_NAME_FIELD],
+        aliases=["시군구"],
+        sticky=True
+    )
+
+    gj_layer = folium.GeoJson(
+        geojson,
+        name="choropleth",
+        style_function=style_function,
+        tooltip=tooltip,
+    ).add_to(m)
+
+    # 툴팁에 수치도 같이 보여주고 싶으면, 별도 Popup로 추가
+    for feat in geojson.get("features", []):
+        k = str(feat["properties"].get(GEO_NAME_FIELD, ""))
+        row = row_by_key.get(k, None)
+        if row is None:
+            continue
+
+        base_val = row.get(f"{base_year}년 가스레인지 수(연간합계)", 0)
+        comp_val = row.get(f"{comp_year}년 가스레인지 수(연간합계)", 0)
+        diff_val = row.get("감소량(기준-비교)", 0)
+        rate_val = row.get("감소율(%)", np.nan)
+
+        try:
+            base_val = int(base_val)
+        except Exception:
+            base_val = 0
+        try:
+            comp_val = int(comp_val)
+        except Exception:
+            comp_val = 0
+        try:
+            diff_val = int(diff_val)
+        except Exception:
+            diff_val = 0
+
+        rate_txt = "" if pd.isna(rate_val) else f"{float(rate_val):.1f}%"
+
+        html = f"""
+        <div style="font-size:12px">
+          <b>{k}</b><br/>
+          {base_year}년: {base_val:,}<br/>
+          {comp_year}년: {comp_val:,}<br/>
+          감소량: {diff_val:,}<br/>
+          감소율: {rate_txt}
+        </div>
+        """
+        # 해당 feature의 중심에 popup 달기
+        try:
+            geom = feat.get("geometry", None)
+            if geom:
+                tmp = folium.GeoJson(feat)
+                # popup은 클릭 시 표시 (레이어 전체에 달면 과해져서 marker로 처리)
+        except Exception:
+            pass
+
+    folium.LayerControl(collapsed=True).add_to(m)
+    return m
 
 
 # ─────────────────────────────────────
@@ -742,73 +928,31 @@ if analysis_mode.startswith("1."):
     with tab2:
         st.subheader("② 기준연도 대비 군구별 가스레인지 감소량 지도 (대구 + 경산)")
 
-        # usage / product 필터 적용 + 대구+경산 시군구만 사용
-        df_map = df_raw.copy()
-        df_map = df_map[df_map[COL_USAGE].isin(usage_sel)]
-        df_map = df_map[df_map[COL_PRODUCT].isin(product_sel)]
-        df_map = df_map[df_map[COL_DISTRICT].isin(TARGET_SIGUNGU)]
+        # map_table 계산 (캐시)
+        map_table = build_map_table_cached(
+            df_raw=df_raw,
+            usage_sel=tuple(usage_sel),
+            product_sel=tuple(product_sel),
+            base_year=int(base_year),
+            comp_year=int(comp_year),
+        )
 
-        map_df = df_map[df_map["연도"].isin([base_year, comp_year])]
-
-        if map_df.empty:
+        if map_table.empty:
             st.info("현재 필터 조건에 해당하는 대구+경산 시군구 데이터가 없어.")
         else:
-            grouped = (
-                map_df.groupby(["연도", COL_DISTRICT], as_index=False)[COL_RANGE_CNT]
-                .sum()
-            )
-
-            pivot_map = (
-                grouped
-                .pivot(index=COL_DISTRICT, columns="연도", values=COL_RANGE_CNT)
-                .reindex(index=TARGET_SIGUNGU)
-                .fillna(0)
-            )
-
-            if base_year not in pivot_map.columns:
-                pivot_map[base_year] = 0
-            if comp_year not in pivot_map.columns:
-                pivot_map[comp_year] = 0
-
-            pivot_map["감소량(기준-비교)"] = pivot_map[base_year] - pivot_map[comp_year]
-            pivot_map["감소율(%)"] = np.where(
-                pivot_map[base_year] > 0,
-                pivot_map["감소량(기준-비교)"] / pivot_map[base_year] * 100,
-                np.nan,
-            )
-            pivot_map["감소율(%)"] = pivot_map["감소율(%)"].round(1)
-
-            map_table = pivot_map.reset_index().rename(
-                columns={
-                    COL_DISTRICT: "시군구",
-                    base_year: f"{base_year}년 가스레인지 수(연간합계)",
-                    comp_year: f"{comp_year}년 가스레인지 수(연간합계)",
-                }
-            )
-
             # ─ GeoJSON 매핑 ─
             if geojson is not None and GEO_NAME_FIELD is not None:
+                map_table = _attach_geo_key(map_table, geojson, GEO_NAME_FIELD)
+
                 geo_names = [
                     str(f["properties"].get(GEO_NAME_FIELD, ""))
-                    for f in geojson["features"]
+                    for f in geojson.get("features", [])
                 ]
-
-                def find_geo_name(d):
-                    # 시군구명이 들어 있는 GeoJSON 속성 값 찾기
-                    for name in geo_names:
-                        if d in name:
-                            return name
-                    return d  # 그래도 못 찾으면 그냥 원래 이름으로
-
-                map_table["geo_key"] = map_table["시군구"].apply(find_geo_name)
-
                 st.caption(
                     f"GeoJSON feature 개수: {len(geo_names)}, "
-                    f"선택된 속성필드: {GEO_NAME_FIELD}, "
-                    f"값 목록: {', '.join(geo_names)}"
+                    f"선택된 속성필드: {GEO_NAME_FIELD}"
                 )
             else:
-                # fallback
                 map_table["geo_key"] = map_table["시군구"]
                 st.caption(
                     "GeoJSON 속성 필드를 자동 선택하지 못했어. "
@@ -843,7 +987,7 @@ if analysis_mode.startswith("1."):
                     height=450,
                 )
 
-            # ✅ 지도(여기만 수정)
+            # 지도 (✅ 여기만 수정: folium 우선 + 없으면 plotly 백업)
             with c2:
                 if geojson is None or GEO_NAME_FIELD is None:
                     st.warning(
@@ -851,165 +995,61 @@ if analysis_mode.startswith("1."):
                         "시군구 이름이 들어 있는 속성 필드를 찾지 못해서 지도를 그릴 수 없어."
                     )
                 else:
-                    # ---------------------------
-                    # [핵심] 세션 스테이트로 지도 생성 결과 고정 (깜빡임/불필요 리로드 완화)
-                    # ---------------------------
-                    base_col = f"{base_year}년 가스레인지 수(연간합계)"
-                    comp_col = f"{comp_year}년 가스레인지 수(연간합계)"
+                    if FOLIUM_OK:
+                        # Streamlit 재실행 시 “불필요 리로드” 줄이기 위한 key
+                        map_key = f"folium_map_{base_year}_{comp_year}_" + "_".join(sorted(usage_sel)) + "_" + "_".join(sorted(product_sel))
 
-                    # 지도에 영향을 주는 조건만 키로 묶음
-                    _map_key = (
-                        base_year,
-                        comp_year,
-                        tuple(sorted(usage_sel)),
-                        tuple(sorted(product_sel)),
-                    )
-
-                    def _geo_bounds_from_geojson(gj: dict):
-                        """GeoJSON 좌표에서 위경도 bounds 계산(Polygon/MultiPolygon 지원)."""
-                        def _iter_coords(geom):
-                            gtype = geom.get("type")
-                            coords = geom.get("coordinates", [])
-                            if gtype == "Polygon":
-                                for ring in coords:
-                                    for lon, lat in ring:
-                                        yield lon, lat
-                            elif gtype == "MultiPolygon":
-                                for poly in coords:
-                                    for ring in poly:
-                                        for lon, lat in ring:
-                                            yield lon, lat
-
-                        min_lon = 999
-                        min_lat = 999
-                        max_lon = -999
-                        max_lat = -999
-
-                        for feat in gj.get("features", []):
-                            geom = feat.get("geometry", {})
-                            for lon, lat in _iter_coords(geom):
-                                min_lon = min(min_lon, lon)
-                                max_lon = max(max_lon, lon)
-                                min_lat = min(min_lat, lat)
-                                max_lat = max(max_lat, lat)
-
-                        if min_lon == 999:
-                            return None
-                        return [[min_lat, min_lon], [max_lat, max_lon]]
-
-                    def _build_folium_map(gj_src: dict, name_field: str, mt: pd.DataFrame):
-                        """map_table 값을 GeoJSON properties에 주입하고 folium choropleth 생성."""
-                        gj = deepcopy(gj_src)
-
-                        # geo_key 기준으로 값 매핑
-                        row_map = (
-                            mt.set_index("geo_key")[["시군구", base_col, comp_col, "감소량(기준-비교)", "감소율(%)"]]
-                            .to_dict("index")
+                        m = build_folium_choropleth(
+                            map_table=map_table,
+                            geojson=geojson,
+                            GEO_NAME_FIELD=GEO_NAME_FIELD,
+                            base_year=int(base_year),
+                            comp_year=int(comp_year),
+                        )
+                        # returned_objects=[] 로 클릭/마우스 이벤트 반환 끊어서 리로드 최소화
+                        st_folium(m, use_container_width=True, returned_objects=[], key=map_key)
+                    else:
+                        # folium 미설치 → Plotly로 자동 백업 (기존 기능 유지)
+                        st.warning(
+                            "현재 실행환경에 folium(또는 streamlit-folium)이 설치되어 있지 않아서 "
+                            "Plotly 지도로 대체 표시 중이야.\n"
+                            f"- 에러: `{FOLIUM_ERR}`"
                         )
 
-                        # 숫자 범위(발산형: -sym ~ +sym)
-                        vals = mt["감소량(기준-비교)"].fillna(0).astype(float).values
-                        sym = float(max(np.max(np.abs(vals)), 1.0))
-
-                        colormap = cm.LinearColormap(
-                            colors=["blue", "white", "red"],
-                            vmin=-sym,
-                            vmax=sym,
-                        )
-                        colormap.caption = "감소량(기준-비교)"
-
-                        # GeoJSON에 tooltip용 데이터 + 색상용 numeric 주입
-                        for feat in gj.get("features", []):
-                            props = feat.get("properties", {})
-                            key = str(props.get(name_field, ""))
-
-                            r = row_map.get(key, None)
-                            if r is None:
-                                # 혹시 key가 조금 다르게 들어가면 포함관계로 한 번 더 시도
-                                for k2, r2 in row_map.items():
-                                    if (k2 in key) or (key in k2):
-                                        r = r2
-                                        break
-
-                            if r is None:
-                                props["__decrease_num__"] = 0.0
-                                props["시군구"] = key
-                                props["기준연도"] = str(base_year)
-                                props["기준(연간합계)"] = ""
-                                props["비교연도"] = str(comp_year)
-                                props["비교(연간합계)"] = ""
-                                props["감소량"] = ""
-                                props["감소율(%)"] = ""
-                            else:
-                                dec = float(r["감소량(기준-비교)"])
-                                rate = r["감소율(%)"]
-                                base_v = int(r[base_col])
-                                comp_v = int(r[comp_col])
-
-                                props["__decrease_num__"] = dec
-                                props["시군구"] = str(r["시군구"])
-                                props["기준연도"] = str(base_year)
-                                props["기준(연간합계)"] = f"{base_v:,}"
-                                props["비교연도"] = str(comp_year)
-                                props["비교(연간합계)"] = f"{comp_v:,}"
-                                props["감소량"] = f"{int(dec):,}"
-                                props["감소율(%)"] = "" if pd.isna(rate) else f"{float(rate):.1f}"
-
-                            feat["properties"] = props
-
-                        # folium map
-                        m = folium.Map(
-                            location=[35.8714, 128.6014],
-                            zoom_start=10,
-                            tiles="CartoDB dark_matter",
+                        fig_map = px.choropleth(
+                            map_table,
+                            geojson=geojson,
+                            locations="geo_key",
+                            featureidkey=f"properties.{GEO_NAME_FIELD}",
+                            color="감소량(기준-비교)",
+                            hover_name="시군구",
+                            hover_data={
+                                f"{base_year}년 가스레인지 수(연간합계)": ":,",
+                                f"{comp_year}년 가스레인지 수(연간합계)": ":,",
+                                "감소량(기준-비교)": ":,",
+                                "감소율(%)": True,
+                            },
+                            color_continuous_scale="RdBu_r",
+                            color_continuous_midpoint=0,
                         )
 
-                        def style_fn(feature):
-                            v = feature["properties"].get("__decrease_num__", 0.0)
-                            try:
-                                v = float(v)
-                            except Exception:
-                                v = 0.0
-                            return {
-                                "fillColor": colormap(v),
-                                "color": "white",
-                                "weight": 1.0,
-                                "fillOpacity": 0.75,
-                            }
-
-                        tooltip = folium.features.GeoJsonTooltip(
-                            fields=["시군구", "기준연도", "기준(연간합계)", "비교연도", "비교(연간합계)", "감소량", "감소율(%)"],
-                            aliases=["시군구", "기준연도", "기준(연간합계)", "비교연도", "비교(연간합계)", "감소량", "감소율(%)"],
-                            sticky=True,
+                        fig_map.update_geos(
+                            fitbounds="locations",
+                            visible=False,
                         )
 
-                        folium.GeoJson(
-                            gj,
-                            name="감소량 지도",
-                            style_function=style_fn,
-                            tooltip=tooltip,
-                            highlight_function=lambda x: {"weight": 3, "fillOpacity": 0.9},
-                        ).add_to(m)
+                        fig_map.update_traces(
+                            marker_line_width=0.8,
+                            marker_line_color="white",
+                        )
 
-                        colormap.add_to(m)
+                        fig_map.update_layout(
+                            margin=dict(l=0, r=0, t=40, b=0),
+                            coloraxis_colorbar=dict(title="감소량"),
+                            title=f"{base_year}년 → {comp_year}년 대구시 구·군 + 경산시 시군구별 가스레인지 감소량",
+                        )
 
-                        b = _geo_bounds_from_geojson(gj)
-                        if b is not None:
-                            m.fit_bounds(b)
-
-                        return m
-
-                    # 세션 스테이트에 지도 캐싱
-                    if ("_folium_map_key" not in st.session_state) or (st.session_state["_folium_map_key"] != _map_key):
-                        st.session_state["_folium_map_key"] = _map_key
-                        st.session_state["_folium_map_obj"] = _build_folium_map(geojson, GEO_NAME_FIELD, map_table)
-
-                    # st_folium: returned_objects=[] 로 클릭/호버 이벤트로 인한 불필요 리로드 최소화
-                    st_folium(
-                        st.session_state["_folium_map_obj"],
-                        use_container_width=True,
-                        returned_objects=[],
-                    )
+                        st.plotly_chart(fig_map, use_container_width=True)
 
             st.markdown(
                 """
