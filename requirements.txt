@@ -3,7 +3,6 @@ pandas
 numpy
 plotly
 openpyxl
-
 folium
 streamlit-folium
 branca
